@@ -302,6 +302,71 @@ def compute_throughout_metrics(batch: DataProto, timing_raw: dict[str, float], n
     }
 
 
+def compute_extra_metrics(batch: DataProto) -> dict[str, Any]:
+    """
+    Computes metrics from reward_extra_info for keys ending with "reward".
+
+    This function extracts additional reward-related metrics from batch.non_tensor_batch
+    that were returned by compute_score functions. It processes all keys ending with
+    "reward" and computes statistical metrics (mean, max, min) for float values.
+
+    Args:
+        batch: A DataProto object containing batch data with reward_extra_info in non_tensor_batch.
+
+    Returns:
+        A dictionary of metrics with keys in the format:
+            - critic/{key}/mean: Mean value of the metric
+            - critic/{key}/max: Maximum value of the metric
+            - critic/{key}/min: Minimum value of the metric
+
+        Only includes metrics for keys ending with "reward".
+
+    Example:
+        If batch.non_tensor_batch contains:
+            {"format_reward": [0.5, 0.6, 0.4], "accuracy_reward": [1.0, 0.0, 1.0]}
+        Then the returned metrics will include:
+            - critic/format_reward/mean, max, min
+            - critic/accuracy_reward/mean, max, min
+    """
+    metrics = {}
+
+    # Get reward_extra_keys from meta_info if available, otherwise scan non_tensor_batch
+    reward_extra_keys = batch.meta_info.get("reward_extra_keys", [])
+    
+    # If reward_extra_keys is not in meta_info, find all keys ending with "reward" in non_tensor_batch
+    if not reward_extra_keys:
+        reward_extra_keys = [
+            key for key in batch.non_tensor_batch.keys()
+            if key.endswith("reward") and key != "reward"  # Exclude "reward" itself
+        ]
+    else:
+        # Filter to only include keys ending with "reward"
+        reward_extra_keys = [key for key in reward_extra_keys if key.endswith("reward") and key != "reward"]
+
+    for key in reward_extra_keys:
+        if key not in batch.non_tensor_batch:
+            continue
+
+        values = batch.non_tensor_batch[key]
+
+        # Convert to numpy array and then to float
+        if isinstance(values, torch.Tensor):
+            values = values.cpu().numpy().astype(float)
+        else:
+            values = np.array(values, dtype=float)
+
+        if len(values) == 0:
+            continue
+
+        # Compute statistics
+        metrics[f"critic/{key}/mean"] = float(np.mean(values))
+        metrics[f"critic/{key}/max"] = float(np.max(values))
+        metrics[f"critic/{key}/min"] = float(np.min(values))
+
+    return metrics
+
+
+
 def bootstrap_metric(
     data: list[Any],
     subset_size: int,
