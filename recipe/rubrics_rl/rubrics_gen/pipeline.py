@@ -13,7 +13,7 @@ from typing import Any, Callable, Optional
 import torch
 from datasets import load_dataset
 from torch.utils.data import DataLoader
-from transformers import AutoProcessor
+from transformers import AutoProcessor, AutoTokenizer
 from vllm import LLM, SamplingParams
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -27,9 +27,9 @@ PROMPT_DIR = SCRIPT_DIR / "prompts"
 COT_FIELD = "cot"
 RUBRICS_FIELD = "rubrics"
 
-COT_MODEL = "Qwen/Qwen3-VL-32B-Thinking"
-COT_PROCESSOR = "Qwen/Qwen3-VL-32B-Thinking"
-COT_BATCH_SIZE = 512
+COT_MODEL = "/mnt/data/liuchonghan/Qwen3-VL-32B-Thinking"
+COT_PROCESSOR = "/mnt/data/liuchonghan/Qwen3-VL-32B-Thinking"
+COT_BATCH_SIZE = 512  # Reduced for vision model to avoid OOM
 COT_SAMPLING = {
     "temperature": 0.0,
     "max_tokens": 16384,
@@ -37,8 +37,8 @@ COT_SAMPLING = {
     "stop_token_ids": [],
 }
 
-FILTER_MODEL = "Qwen/Qwen3-30B-A3B-Instruct-2507-FP8"
-FILTER_PROCESSOR = "Qwen/Qwen3-30B-A3B-Instruct-2507-FP8"
+FILTER_MODEL = "/mnt/data/liuchonghan/Qwen3-30B-A3B-Instruct-2507"
+FILTER_PROCESSOR = "/mnt/data/liuchonghan/Qwen3-30B-A3B-Instruct-2507"
 FILTER_BATCH_SIZE = 10240
 FILTER_SAMPLING = {
     "temperature": 0.1,
@@ -48,9 +48,9 @@ FILTER_SAMPLING = {
     "stop_token_ids": [],
 }
 
-RUBRICS_MODEL = "Qwen/Qwen3-30B-A3B-Instruct-2507-FP8"
-RUBRICS_PROCESSOR = "Qwen/Qwen3-30B-A3B-Instruct-2507-FP8"
-RUBRICS_BATCH_SIZE = 1024
+RUBRICS_MODEL = "/mnt/data/liuchonghan/Qwen3-30B-A3B-Instruct-2507"
+RUBRICS_PROCESSOR = "/mnt/data/liuchonghan/Qwen3-30B-A3B-Instruct-2507"
+RUBRICS_BATCH_SIZE = 10240
 RUBRICS_SAMPLING = {
     "temperature": 0.7,
     "max_tokens": 16384,
@@ -126,7 +126,7 @@ def vllm_collate_batch(batch: list[dict[str, Any]], processor: AutoProcessor) ->
     return batch
 
 
-def build_messages(system_prompt: str, user_text: str, image_paths: list[str] | None = None) -> list[dict[str, Any]]:
+def build_vl_messages(system_prompt: str, user_text: str, image_paths: list[str] | None = None) -> list[dict[str, Any]]:
     messages: list[dict[str, Any]] = []
     if system_prompt:
         messages.append({"role": "system", "content": system_prompt})
@@ -138,6 +138,13 @@ def build_messages(system_prompt: str, user_text: str, image_paths: list[str] | 
     content.append({"type": "text", "text": user_text})
 
     messages.append({"role": "user", "content": content})
+    return messages
+
+def build_text_messages(system_prompt: str, user_text: str) -> list[dict[str, Any]]:
+    messages: list[dict[str, Any]] = []
+    if system_prompt:
+        messages.append({"role": "system", "content": system_prompt})
+    messages.append({"role": "user", "content": user_text})
     return messages
 
 
@@ -155,16 +162,8 @@ def extract_answer_from_cot(cot_text: str) -> str:
 
     if "</think>" in cot_text:
         remaining = cot_text.split("</think>")[-1].strip()
-        remaining = re.sub(r"<tool_call>.*?</tool_call>", "", remaining, flags=re.DOTALL)
-        remaining = re.sub(r"<tool_response>.*?</tool_response>", "", remaining, flags=re.DOTALL)
         if remaining:
             return remaining.strip()
-
-    lines = cot_text.strip().split("\n")
-    for line in reversed(lines):
-        line = line.strip()
-        if line and not line.startswith("<") and len(line) > 5:
-            return line
 
     return cot_text.strip()
 
@@ -247,22 +246,53 @@ class StageDataset(DistributeDataset):
         return item
 
 
-def build_llm(model_name: str, enable_expert_parallel: bool) -> LLM:
+def build_llm(
+    model_name: str,
+    enable_expert_parallel: bool,
+    gpu_memory_utilization: float = 0.6,
+    max_model_len: int | None = None,
+    max_num_seqs: int = 256,
+) -> LLM:
+    """
+    Build vLLM LLM instance with memory optimizations for vision models.
+    
+    Args:
+        model_name: Model name or path
+        enable_expert_parallel: Whether to enable expert parallel
+        gpu_memory_utilization: GPU memory utilization ratio (default 0.6 for vision models)
+        max_model_len: Maximum model length (None for auto, lower values reduce memory)
+        max_num_seqs: Maximum number of sequences to process in parallel
+    """
     tensor_parallel_size = torch.cuda.device_count() if torch.cuda.is_available() else 1
-    return LLM(
-        model=model_name,
-        tensor_parallel_size=tensor_parallel_size,
-        enable_expert_parallel=enable_expert_parallel,
-        dtype="auto",
-        gpu_memory_utilization=0.9,
-        trust_remote_code=True,
-        seed=0,
-        mm_encoder_tp_mode="data",
-    )
+    
+    llm_kwargs = {
+        "model": model_name,
+        "tensor_parallel_size": tensor_parallel_size,
+        "enable_expert_parallel": enable_expert_parallel,
+        "dtype": "auto",
+        "gpu_memory_utilization": gpu_memory_utilization,
+        "trust_remote_code": True,
+        "seed": 0,
+        "max_num_seqs": max_num_seqs,
+    }
+    
+    # Add mm_encoder_tp_mode for vision models
+    if "VL" in model_name or "vision" in model_name.lower():
+        llm_kwargs["mm_encoder_tp_mode"] = "data"
+    
+    # Add max_model_len if specified (helps reduce memory for vision models)
+    if max_model_len is not None:
+        llm_kwargs["max_model_len"] = max_model_len
+    
+    return LLM(**llm_kwargs)
 
 
 def run_pipeline(args: argparse.Namespace) -> None:
     os.environ.setdefault("VLLM_WORKER_MULTIPROC_METHOD", "spawn")
+    
+    # Enable V1 engine for better memory management with vision models (vLLM 0.12+)
+    if "VL" in COT_MODEL or "vision" in COT_MODEL.lower():
+        os.environ.setdefault("VLLM_USE_V1", "1")
 
     cot_system = load_prompt("cot_system.txt")
     cot_user = load_prompt("cot_user.txt", "{question}")
@@ -272,8 +302,8 @@ def run_pipeline(args: argparse.Namespace) -> None:
     rubrics_user = load_prompt("rubrics_user.txt")
 
     cot_processor = AutoProcessor.from_pretrained(COT_PROCESSOR)
-    filter_processor = AutoProcessor.from_pretrained(FILTER_PROCESSOR)
-    rubrics_processor = AutoProcessor.from_pretrained(RUBRICS_PROCESSOR)
+    filter_processor = AutoTokenizer.from_pretrained(FILTER_PROCESSOR)
+    rubrics_processor = AutoTokenizer.from_pretrained(RUBRICS_PROCESSOR)
 
     def cot_message_fn(sample: dict[str, Any]) -> Optional[list[dict[str, Any]]]:
         question = get_question(sample)
@@ -281,7 +311,7 @@ def run_pipeline(args: argparse.Namespace) -> None:
             return None
         image_paths = resolve_image_paths(sample, args.image_base_path)
         user_text = cot_user.format(question=question)
-        return build_messages(cot_system, user_text, image_paths or None)
+        return build_vl_messages(cot_system, user_text, image_paths or None)
 
     cot_dataset = StageDataset(
         data_path=args.input_file,
@@ -297,7 +327,13 @@ def run_pipeline(args: argparse.Namespace) -> None:
         collate_fn=partial(vllm_collate_batch, processor=cot_processor),
     )
 
-    cot_llm = build_llm(COT_MODEL, enable_expert_parallel=False)
+    cot_llm = build_llm(
+        COT_MODEL,
+        enable_expert_parallel=False,
+        gpu_memory_utilization=args.gpu_memory_utilization,
+        max_model_len=args.max_model_len,
+        max_num_seqs=args.max_num_seqs,
+    )
     cot_sampling = SamplingParams(**COT_SAMPLING)
 
     def cot_post_process(item: dict[str, Any], output: str) -> dict[str, Any]:
@@ -332,7 +368,7 @@ def run_pipeline(args: argparse.Namespace) -> None:
             ground_truth=ground_truth,
             model_answer=extracted_answer,
         )
-        messages = build_messages(answer_filter_system, user_text)
+        messages = build_text_messages(answer_filter_system, user_text)
         return messages, {"extracted_answer": extracted_answer}
 
     filter_dataset = StageDataset(
@@ -349,7 +385,13 @@ def run_pipeline(args: argparse.Namespace) -> None:
         collate_fn=partial(vllm_collate_batch, processor=filter_processor),
     )
 
-    filter_llm = build_llm(FILTER_MODEL, enable_expert_parallel=True)
+    filter_llm = build_llm(
+        FILTER_MODEL,
+        enable_expert_parallel=True,
+        gpu_memory_utilization=args.gpu_memory_utilization,
+        max_model_len=args.max_model_len,
+        max_num_seqs=args.max_num_seqs,
+    )
     filter_sampling = SamplingParams(**FILTER_SAMPLING)
 
     def filter_post_process(item: dict[str, Any], output: str) -> dict[str, Any]:
@@ -360,6 +402,7 @@ def run_pipeline(args: argparse.Namespace) -> None:
         else:
             item["is_correct"] = judgement
             item["status"] = "success"
+        item["judege_result"] = output
         return item
 
     def filter_post_filter(item: dict[str, Any], _output: str) -> bool:
@@ -388,7 +431,7 @@ def run_pipeline(args: argparse.Namespace) -> None:
             query=question,
             reference_cot="<think>\n" + cot_text,
         )
-        return build_messages(rubrics_system, user_text)
+        return build_text_messages(rubrics_system, user_text)
 
     rubrics_dataset = StageDataset(
         data_path=args.filter_filtered_out,
@@ -404,7 +447,13 @@ def run_pipeline(args: argparse.Namespace) -> None:
         collate_fn=partial(vllm_collate_batch, processor=rubrics_processor),
     )
 
-    rubrics_llm = build_llm(RUBRICS_MODEL, enable_expert_parallel=True)
+    rubrics_llm = build_llm(
+        RUBRICS_MODEL,
+        enable_expert_parallel=True,
+        gpu_memory_utilization=args.gpu_memory_utilization,
+        max_model_len=args.max_model_len,
+        max_num_seqs=args.max_num_seqs,
+    )
     rubrics_sampling = SamplingParams(**RUBRICS_SAMPLING)
 
     def rubrics_post_process(item: dict[str, Any], output: str) -> dict[str, Any]:
@@ -442,14 +491,32 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--rank", type=int, default=0, help="Rank for distributed split")
     parser.add_argument("--world_size", type=int, default=1, help="World size for distributed split")
     parser.add_argument("--keep_raw", action="store_true", help="Save raw outputs for each stage")
+    
+    # Memory optimization arguments for vLLM
+    parser.add_argument(
+        "--gpu_memory_utilization",
+        type=float,
+        default=0.6,
+        help="GPU memory utilization ratio (default 0.6 for vision models, lower if OOM)",
+    )
+    parser.add_argument(
+        "--max_model_len",
+        type=int,
+        default=None,
+        help="Maximum model length (None for auto, lower values reduce memory for vision models)",
+    )
+    parser.add_argument(
+        "--max_num_seqs",
+        type=int,
+        default=256,
+        help="Maximum number of sequences to process in parallel (default 256)",
+    )
 
     parser.add_argument("--cot_raw_out", type=str, required=True, help="Raw output JSONL for CoT stage")
     parser.add_argument("--cot_filtered_out", type=str, required=True, help="Filtered output JSONL for CoT stage")
 
     parser.add_argument("--filter_raw_out", type=str, required=True, help="Raw output JSONL for filter stage")
-    parser.add_argument(
-        "--filter_filtered_out", type=str, required=True, help="Filtered output JSONL for filter stage"
-    )
+    parser.add_argument("--filter_filtered_out", type=str, required=True, help="Filtered output JSONL for filter stage")
 
     parser.add_argument("--rubrics_raw_out", type=str, required=True, help="Raw output JSONL for rubrics stage")
     parser.add_argument(
