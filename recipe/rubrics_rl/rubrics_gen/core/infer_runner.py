@@ -27,6 +27,11 @@ def save_batch_into_jsonl_file(results: list[dict[str, Any]], save_path: str) ->
             except TypeError:
                 result.pop(key, None)
 
+    # Ensure the directory exists before writing
+    dir_path = os.path.dirname(save_path)
+    if dir_path:
+        os.makedirs(dir_path, exist_ok=True)
+
     with open(save_path, "a", encoding="utf-8") as handle:
         for result in save_results:
             handle.write(json.dumps(result, ensure_ascii=False) + "\n")
