@@ -2,18 +2,19 @@
 
 set -x
 
-export LLM_AS_A_JUDGE_BASE="http://xxx.xxx.xxx.xxx:8000/v1"
+export LLM_AS_A_JUDGE_BASE="http://22.25.242.58:8000/v1"
 export WANDB_API_KEY=xxx
+export WANDB_MODE=offline
 
 PROJECT_NAME="rubrics_rl"
 EXPERIMENT_NAME="Baseline-RubricsRL"
 
-BASEDIR=base_dir
+BASEDIR=${PWD}
 SAVE_CHECKPOINT_DIR=${BASEDIR}/verl_checkpoints
-DATASET_TRAIN=/apdcephfs_gy5/share_303588738/yingzhepeng/datasets/rubric_rl/39Krelease_verl_format_train.parquet
-DATASET_VAL=/apdcephfs_gy5/share_303588738/yingzhepeng/datasets/rubric_rl/39Krelease_verl_format_val.parquet
+DATASET_TRAIN=${BASEDIR}/dataset/ViRL-Rubric/rubrics_filtered_train.parquet
+DATASET_VAL=${BASEDIR}/dataset/ViRL-Rubric/rubrics_filtered_val.parquet
 
-REF_MODEL_PATH=Qwen/Qwen2.5-VL-7B-Instruct
+REF_MODEL_PATH=/mnt/data/liuchonghan/Qwen2.5-VL-7B-Instruct
 set -x
 ENGINE=${1:-vllm}
 
@@ -27,14 +28,14 @@ python3 -m verl.trainer.main_ppo \
     data.filter_overlong_prompts=True \
     data.truncation='error' \
     data.image_key=images \
-    actor_rollout_ref.model.path=Qwen/Qwen2.5-VL-7B-Instruct \
+    actor_rollout_ref.model.path=$REF_MODEL_PATH \
     actor_rollout_ref.actor.optim.lr=1e-6 \
     actor_rollout_ref.model.use_remove_padding=True \
     actor_rollout_ref.model.use_fused_kernels=True \
     actor_rollout_ref.actor.ppo_mini_batch_size=128 \
     actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=1 \
     actor_rollout_ref.actor.use_kl_loss=True \
-    actor_rollout_ref.actor.kl_loss_coef=0.01 \
+    actor_rollout_ref.actor.kl_loss_coef=0.0 \
     actor_rollout_ref.actor.kl_loss_type=low_var_kl \
     actor_rollout_ref.actor.entropy_coeff=0 \
     actor_rollout_ref.model.enable_gradient_checkpointing=True \
