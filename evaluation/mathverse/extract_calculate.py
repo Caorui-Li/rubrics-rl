@@ -1,6 +1,5 @@
 import argparse
 import json
-import logging
 import os
 import re
 import sys
@@ -14,9 +13,7 @@ _script_dir = os.path.dirname(os.path.abspath(__file__))
 _root = os.path.dirname(os.path.dirname(_script_dir))
 if _root not in sys.path:
     sys.path.insert(0, _root)
-from evaluation.common_judge import get_chat_response
-
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+from evaluation.utils import get_chat_response, init_judge_client_or_raise
 
 
 def get_gpt4_extract_ICE():
@@ -147,27 +144,23 @@ def post_check_score(line, prefetch=False):
         return False
 
 
-def extract_answer(problem, judge_model=None):
+def extract_answer(problem, judge_client, judge_model, judge_stats=None):
     prompt = build_mathverse_gpt4_extract_prompt(problem)
-    logging.info(f"sample_id: {problem['sample_index']}")
-    return get_chat_response(prompt, judge_model=judge_model), problem["sample_index"]
+    return get_chat_response(judge_client, judge_model, prompt, judge_stats=judge_stats), problem["sample_index"]
 
 
-def score_answer(problem, judge_model=None):
+def score_answer(problem, judge_client, judge_model, judge_stats=None):
     retry = 5
     prompt = build_mathverse_gpt4_score_prompt(problem)
     if post_check_score(problem, prefetch=True):
         res = post_check_score(problem, prefetch=True)
-        logging.info(f"sample_id: {problem['sample_index']}")
         return True, problem["sample_index"]
     for i in range(retry):
         res = get_chat_response(
-            prompt, retry=1, temperature=0.5 * i, judge_model=judge_model
+            judge_client, judge_model, prompt, retry=1, temperature=0.5 * i, judge_stats=judge_stats
         )
         if res.strip() in ["0", "1"]:
-            logging.info(f"sample_id: {problem['sample_index']}")
             return int(res) == 1, problem["sample_index"]
-    logging.info(f"sample_id: {problem['sample_index']}")
     return False, problem["sample_index"]
 
 
@@ -200,6 +193,71 @@ def MathVerse_acc(result):
     return scores
 
 
+def run_extract(
+    output_dir,
+    output_file,
+    response_label="response",
+    number=-1,
+    output_label="extract",
+    init_judge=True,
+    judge_client=None,
+    judge_model=None,
+    judge_stats=None,
+):
+    if judge_client is None or judge_model is None:
+        if not init_judge:
+            raise RuntimeError("judge_client/judge_model must be provided when init_judge=False")
+        judge_client, judge_model, _ = init_judge_client_or_raise()
+
+    label = response_label
+    result_file = os.path.join(output_dir, output_file)
+    if output_label != "":
+        extract_file = result_file.replace(".json", f"_{output_label}.json")
+    else:
+        extract_file = result_file
+    score_file = result_file.replace(".json", "_score.json")
+
+    print(f"Reading {result_file}...")
+    results = json.load(open(result_file))
+
+    test_ids = list(results.keys())
+    if number > 0:
+        test_ids = test_ids[: min(number, len(test_ids))]
+    print("Number of testing problems:", len(test_ids))
+
+    with ThreadPoolExecutor(max_workers=32) as executor:
+        futures = [
+            executor.submit(extract_answer, results[sample_id], judge_client, judge_model, judge_stats)
+            for sample_id in test_ids
+        ]
+    for future in as_completed(futures):
+        extraction, sample_id = future.result()
+        results[sample_id]["extraction"] = extraction
+
+    print(f"Saving results to {extract_file}...")
+    json.dump(results, open(extract_file, "w"), indent=4, ensure_ascii=False)
+    print("Results saved.")
+
+    with ThreadPoolExecutor(max_workers=32) as executor:
+        futures = [
+            executor.submit(score_answer, results[sample_id], judge_client, judge_model, judge_stats)
+            for sample_id in test_ids
+        ]
+    for future in as_completed(futures):
+        score, sample_id = future.result()
+        results[sample_id]["score"] = score
+
+    print(f"Saving results to {extract_file}...")
+    json.dump(results, open(extract_file, "w"), indent=4, ensure_ascii=False)
+    print("Results saved.")
+
+    scores = MathVerse_acc(pd.DataFrame([v for _, v in results.items()]))
+    print(f"Saving scores to {score_file}...")
+    json.dump(scores, open(score_file, "w"), indent=4, ensure_ascii=False)
+    print("Scores saved.")
+    return {"extract_file": extract_file, "score_file": score_file, "num_problems": len(test_ids), "label": label}
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--output_dir", type=str, default="./results")
@@ -207,49 +265,12 @@ if __name__ == "__main__":
     parser.add_argument("--response_label", type=str, default="response", help="response label for the input file")
     parser.add_argument("--number", type=int, default=-1, help="number of problems to run")
     parser.add_argument("--output_label", type=str, default="extract", help="label for the output file")
-    parser.add_argument("--judge_model", type=str, default=None, help="Judge model: gpt-4o, deepseek-chat, etc.")
     args = parser.parse_args()
-
-    label = args.response_label
-    result_file = os.path.join(args.output_dir, args.output_file)
-
-    if args.output_label != "":
-        output_file = result_file.replace(".json", f"_{args.output_label}.json")
-    else:
-        output_file = result_file
-
-    print(f"Reading {result_file}...")
-    results = json.load(open(result_file))
-
-    test_pids = list(results.keys())
-    if args.number > 0:
-        test_pids = test_pids[: min(args.number, len(test_pids))]
-    print("Number of testing problems:", len(test_pids))
-
-    with ThreadPoolExecutor(max_workers=32) as executor:
-        futures = [executor.submit(extract_answer, results[sample_id], args.judge_model) for sample_id in test_pids]
-
-    for future in as_completed(futures):
-        extraction, sample_id = future.result()
-        results[sample_id]["extraction"] = extraction
-
-    print(f"Saving results to {output_file}...")
-    json.dump(results, open(output_file, "w"), indent=4, ensure_ascii=False)
-    print(f"Results saved.")
-
-    with ThreadPoolExecutor(max_workers=32) as executor:
-        futures = [executor.submit(score_answer, results[sample_id], args.judge_model) for sample_id in test_pids]
-
-    for future in as_completed(futures):
-        score, sample_id = future.result()
-        results[sample_id]["score"] = score
-
-    print(f"Saving results to {output_file}...")
-    json.dump(results, open(output_file, "w"), indent=4, ensure_ascii=False)
-    print(f"Results saved.")
-
-    results = [v for _, v in results.items()]
-    scores = MathVerse_acc(pd.DataFrame(results))
-    print(f"Saving scores to {result_file.replace('.json', f'_score.json')}...")
-    json.dump(scores, open(result_file.replace(".json", f"_score.json"), "w"), indent=4, ensure_ascii=False)
-    print(f"Scores saved.")
+    run_extract(
+        output_dir=args.output_dir,
+        output_file=args.output_file,
+        response_label=args.response_label,
+        number=args.number,
+        output_label=args.output_label,
+        init_judge=True,
+    )

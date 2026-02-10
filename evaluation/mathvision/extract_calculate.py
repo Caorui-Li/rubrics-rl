@@ -1,7 +1,6 @@
 import argparse
 import copy as cp
 import json
-import logging
 import os
 import re
 import string
@@ -18,9 +17,7 @@ _script_dir = os.path.dirname(os.path.abspath(__file__))
 _root = os.path.dirname(os.path.dirname(_script_dir))
 if _root not in sys.path:
     sys.path.insert(0, _root)
-from evaluation.common_judge import get_chat_response
-
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+from evaluation.utils import get_chat_response, init_judge_client_or_raise
 
 
 def is_equal(asw: str, gt_asw: str) -> bool:
@@ -206,14 +203,12 @@ def post_check(question_data, prefetch=False):
         return False
 
 
-def extract_answer(problem, judge_model=None):
+def extract_answer(problem, judge_client, judge_model, judge_stats=None):
     prompt = build_mathv_gpt4_prompt(problem)
     if post_check(problem, prefetch=True):
         res = post_check(problem, prefetch=True)
-        logging.info(f"id: {problem['id']}")
         return res, problem["id"]
-    logging.info(f"id: {problem['id']}")
-    return get_chat_response(prompt, judge_model=judge_model), problem["id"]
+    return get_chat_response(judge_client, judge_model, prompt, judge_stats=judge_stats), problem["id"]
 
 
 def MATH_V_acc(result):
@@ -240,6 +235,63 @@ def MATH_V_acc(result):
     return res
 
 
+def run_extract(
+    output_dir,
+    output_file,
+    response_label="response",
+    number=-1,
+    output_label="extract",
+    init_judge=True,
+    judge_client=None,
+    judge_model=None,
+    judge_stats=None,
+):
+    if judge_client is None or judge_model is None:
+        if not init_judge:
+            raise RuntimeError("judge_client/judge_model must be provided when init_judge=False")
+        judge_client, judge_model, _ = init_judge_client_or_raise()
+
+    label = response_label
+    result_file = os.path.join(output_dir, output_file)
+    if output_label != "":
+        extract_file = result_file.replace(".json", f"_{output_label}.json")
+    else:
+        extract_file = result_file
+    score_file = result_file.replace(".json", "_score.json")
+
+    print(f"Reading {result_file}...")
+    results = json.load(open(result_file))
+
+    test_ids = list(results.keys())
+    if number > 0:
+        test_ids = test_ids[: min(number, len(test_ids))]
+    print("Number of testing problems:", len(test_ids))
+
+    with ThreadPoolExecutor(max_workers=32) as executor:
+        futures = [
+            executor.submit(extract_answer, results[sample_id], judge_client, judge_model, judge_stats)
+            for sample_id in test_ids
+        ]
+
+    for future in as_completed(futures):
+        extraction, sample_id = future.result()
+        results[sample_id]["extraction"] = extraction
+
+    for sample_id in test_ids:
+        results[sample_id]["score"] = bool(post_check(results[sample_id], prefetch=False))
+
+    print(f"Saving results to {extract_file}...")
+    json.dump(results, open(extract_file, "w"), indent=4, ensure_ascii=False)
+    print("Results saved.")
+
+    score_df = MATH_V_acc([v for _, v in results.items()])
+    print("\n" + tabulate(score_df))
+    print(f"Saving scores to {score_file}...")
+    json.dump(json.loads(score_df.to_json(orient="records")), open(score_file, "w"), indent=4, ensure_ascii=False)
+    print("Scores saved.")
+    return {"extract_file": extract_file, "score_file": score_file, "num_problems": len(test_ids), "label": label}
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--output_dir", type=str, default="./results")
@@ -247,44 +299,12 @@ if __name__ == "__main__":
     parser.add_argument("--response_label", type=str, default="response", help="response label for the input file")
     parser.add_argument("--number", type=int, default=-1, help="number of problems to run")
     parser.add_argument("--output_label", type=str, default="extract", help="label for the output file")
-    parser.add_argument("--judge_model", type=str, default=None, help="Judge model: gpt-4o, deepseek-chat, etc.")
     args = parser.parse_args()
-
-    label = args.response_label
-    result_file = os.path.join(args.output_dir, args.output_file)
-
-    if args.output_label != "":
-        output_file = result_file.replace(".json", f"_{args.output_label}.json")
-    else:
-        output_file = result_file
-
-    print(f"Reading {result_file}...")
-    results = json.load(open(result_file))
-
-    test_ids = list(results.keys())
-    if args.number > 0:
-        test_ids = test_ids[: min(args.number, len(test_ids))]
-    print("Number of testing problems:", len(test_ids))
-
-    with ThreadPoolExecutor(max_workers=32) as executor:
-        futures = [executor.submit(extract_answer, results[sample_id], args.judge_model) for sample_id in test_ids]
-
-    for future in as_completed(futures):
-        extraction, id = future.result()
-        results[id]["extraction"] = extraction
-
-    print(f"Saving results to {output_file}...")
-    json.dump(results, open(output_file, "w"), indent=4, ensure_ascii=False)
-    print(f"Results saved.")
-
-    results = [v for _, v in results.items()]
-    scores = MATH_V_acc(results)
-    print("\n" + tabulate(scores))
-    print(f"Saving scores to {result_file.replace('.json', f'_score.json')}...")
-    json.dump(
-        json.loads(scores.to_json(orient="records")),
-        open(result_file.replace(".json", f"_score.json"), "w"),
-        indent=4,
-        ensure_ascii=False,
+    run_extract(
+        output_dir=args.output_dir,
+        output_file=args.output_file,
+        response_label=args.response_label,
+        number=args.number,
+        output_label=args.output_label,
+        init_judge=True,
     )
-    print(f"Scores saved.")

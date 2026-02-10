@@ -2,23 +2,12 @@ import argparse
 import json
 import os
 import random
-import time
 
-from datasets import load_dataset
+from evaluation.utils import DEFAULT_SYSTEM_PROMPT, load_data_split, load_system_prompt
 from qwen_vl_utils import process_vision_info
 from tqdm import tqdm
 from transformers import AutoProcessor
 from vllm import LLM, SamplingParams
-
-ds_collections = {
-    "OE_MM_maths_en_COMP": {"root": "Hothan/OlympiadBench", "split": "OE_MM_maths_en_COMP"},
-    "OE_MM_physics_en_COMP": {"root": "Hothan/OlympiadBench", "split": "OE_MM_physics_en_COMP"},
-    "OE_TO_maths_en_COMP": {"root": "Hothan/OlympiadBench", "split": "OE_TO_maths_en_COMP"},
-    "OE_TO_physics_en_COMP": {"root": "Hothan/OlympiadBench", "split": "OE_TO_physics_en_COMP"},
-}
-
-SYSTEM_PROMPT = "You are a helpful assistant."
-
 
 english_answer_type_dict = {
     "Numerical": "a numerical value",
@@ -26,8 +15,6 @@ english_answer_type_dict = {
     "Equation": "an equation",
     "Interval": "an interval",
 }
-
-
 def make_input(prompt, question_content):
     input = prompt + "\n" + question_content
     return input
@@ -96,18 +83,35 @@ def get_single_answer_type_text(answer_type):
     raise ValueError(f"Error parsing answer type {answer_type}!")
 
 
-def evaluate_chat_model():
+def evaluate_chat_model(args, llm, processor, stop_token_ids):
     random.seed(args.seed)
+    dataset_entries = getattr(args, "dataset_entries", {}) or {}
+    default_source = getattr(args, "dataset_source", "") or ""
+    cache_dir = getattr(args, "dataset_cache_dir", None)
+    system_prompt = getattr(args, "system_prompt_text", "") or load_system_prompt(
+        getattr(args, "system_prompt", ""),
+        default_prompt=DEFAULT_SYSTEM_PROMPT,
+    )
 
     data = []
     for ds_name in args.datasets:
-        split = load_dataset(
-            ds_collections[ds_name]["root"],
-            ds_collections[ds_name]["split"],
-            cache_dir=os.path.join(os.getcwd(), "dataset/OlympiadBench"),
-        )["train"]
+        ds_cfg = dataset_entries.get(ds_name, {}) if isinstance(dataset_entries, dict) else {}
+        source = ds_cfg.get("source") or default_source
+        split = ds_cfg.get("split")
+        name = ds_cfg.get("name")
+        if not source or not split:
+            raise ValueError(f"Missing dataset config for {ds_name}: source/split are required.")
+        split = load_data_split(
+            source=source,
+            split=split,
+            cache_dir=cache_dir,
+            name=name,
+        )
+        if args.limit > 0:
+            split = split.select(range(min(args.limit, len(split))))
+        source_label = name or ds_name
         for data_item in split:
-            data_item["source"] = ds_collections[ds_name]["split"]
+            data_item["source"] = source_label
             data.append(data_item)
 
     inputs = []
@@ -122,7 +126,7 @@ def evaluate_chat_model():
             {
                 "role": "system",
                 "content": [
-                    {"type": "text", "text": SYSTEM_PROMPT},
+                    {"type": "text", "text": system_prompt},
                 ],
             },
             {
@@ -150,16 +154,17 @@ def evaluate_chat_model():
                 }
             )
 
-    sampling_params = SamplingParams(temperature=0.0, max_tokens=4096, stop_token_ids=stop_token_ids)
+    sampling_params = SamplingParams(
+        temperature=args.gen_temperature,
+        max_tokens=args.gen_max_tokens,
+        stop_token_ids=stop_token_ids,
+    )
     model_outputs = llm.generate(inputs, sampling_params=sampling_params)
     outputs = []
     for data_item, model_output in zip(data, model_outputs):
-        if "image_1" in data_item:
-            del data_item["image_1"]
-            del data_item["image_2"]
-            del data_item["image_3"]
-            del data_item["image_4"]
-            del data_item["image_5"]
+        for i in range(1, 10):
+            if data_item.get(f"image_{i}"):
+                del data_item[f"image_{i}"]
         data_item["response"] = model_output.outputs[0].text
         outputs.append(data_item)
 
@@ -169,14 +174,12 @@ def evaluate_chat_model():
         temp[id] = data_item
 
     print("Evaluating OlympiadBench ...")
-    time_prefix = time.strftime("%y%m%d%H%M%S", time.localtime())
-    results_file = f"olympiadbench_{time_prefix}.json"
+    results_file = "olympiadbench.json"
     output_path = os.path.join(args.out_dir, results_file)
     json.dump(temp, open(output_path, "w", encoding="utf-8"), indent=4, ensure_ascii=False)
     print("Results saved to {}".format(output_path))
 
-    cmd = f"python evaluation/olympiadbench/extract_calculate.py --output_file {results_file} --output_dir {args.out_dir}"
-    print(cmd)
+    return [results_file]
 
 
 if __name__ == "__main__":
@@ -190,12 +193,19 @@ if __name__ == "__main__":
     parser.add_argument("--out-dir", type=str, default="results")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--tensor-parallel-size", type=int, default=4)
+    parser.add_argument("--limit", type=int, default=-1, help="Max number of samples per dataset for quick debug.")
+    parser.add_argument("--gen-temperature", type=float, default=0.0)
+    parser.add_argument("--gen-max-tokens", type=int, default=4096)
+    parser.add_argument("--gen-stop-token-ids", type=str, default="", help="Comma-separated stop token ids, empty for none.")
+    parser.add_argument("--dataset-source", type=str, default="", help="Dataset source (HF repo id or local path).")
+    parser.add_argument("--system-prompt", type=str, default="", help="System prompt text or prompt file path.")
     args = parser.parse_args()
 
     if not os.path.exists(args.out_dir):
         os.makedirs(args.out_dir)
 
     args.datasets = args.datasets.split(",")
+    args.dataset_entries = {}
     print("datasets:", args.datasets)
 
     llm = LLM(
@@ -205,6 +215,6 @@ if __name__ == "__main__":
         limit_mm_per_prompt={"image": 8},
     )
     processor = AutoProcessor.from_pretrained(args.checkpoint, trust_remote_code=True)
-    stop_token_ids = None
+    stop_token_ids = [int(x.strip()) for x in args.gen_stop_token_ids.split(",") if x.strip()] or None
 
-    evaluate_chat_model()
+    evaluate_chat_model(args, llm, processor, stop_token_ids)

@@ -1,17 +1,16 @@
+#!/usr/bin/env python3
 """
-Download evaluation datasets from HuggingFace into dataset/ using HF mirror when enabled.
-Run with main conda env after enabling mirror: source scripts/hf_mirror_on.sh
+Download evaluation datasets from HuggingFace into dataset/.
 """
 import os
 import sys
 
 from datasets import load_dataset
 
-# Full datasets only (no testmini/subset). load_kwargs: name=, split= for load_dataset.
-# cache_subdir is relative to cwd, e.g. dataset/MathVista
+# (repo_id, cache_subdir, load_dataset kwargs)
 DATASETS = [
-    ("AI4Math/MathVista", "dataset/MathVista", {"split": "test"}),  # full test ~5.14k
-    ("AI4Math/MathVerse", "dataset/MathVerse", {"name": "testmini"}),  # main eval set ~3.94k (no separate "test" on HF)
+    ("AI4Math/MathVista", "dataset/MathVista", {"split": "testmini"}),
+    ("AI4Math/MathVerse", "dataset/MathVerse", {"name": "testmini"}),
     ("MathLLMs/MathVision", "dataset/MathVision", {"split": "test"}),
     ("FanqingM/MMK12", "dataset/MMK12", {"split": "test"}),
     ("Hothan/OlympiadBench", "dataset/OlympiadBench", {"name": "OE_MM_maths_en_COMP"}),
@@ -29,6 +28,7 @@ def main(dataset_filter=None):
     hf_endpoint = os.environ.get("HF_ENDPOINT", "")
     if hf_endpoint:
         print(f"Using HF_ENDPOINT={hf_endpoint} for downloads.", flush=True)
+
     to_download = DATASETS
     if dataset_filter:
         want = dataset_filter.lower()
@@ -43,19 +43,21 @@ def main(dataset_filter=None):
         label = kwargs.get("name") or kwargs.get("split", "")
         name = f"{repo_id} ({label})"
         print(f"Downloading {name} -> {cache_dir} ...", flush=True)
-        try:
-            load_dataset(repo_id, cache_dir=cache_dir, **kwargs)
-            print(f"  Done: {name}", flush=True)
-        except Exception as e:
-            print(f"  Failed: {name}: {e}", file=sys.stderr, flush=True)
-            raise
+        load_dataset(repo_id, cache_dir=cache_dir, **kwargs)
+        print(f"  Done: {name}", flush=True)
 
     print("All datasets downloaded to dataset/.", flush=True)
 
 
 if __name__ == "__main__":
     import argparse
-    parser = argparse.ArgumentParser(description="Download evaluation datasets to dataset/ (use HF mirror via hf_mirror_on)")
-    parser.add_argument("--dataset", type=str, default=None, help="Optional: download only one (e.g. MathVista, MathVerse, MathVision, MMK12, OlympiadBench)")
+
+    parser = argparse.ArgumentParser(description="Download evaluation datasets to dataset/")
+    parser.add_argument(
+        "--dataset",
+        type=str,
+        default=None,
+        help="Optional filter: MathVista / MathVerse / MathVision / MMK12 / OlympiadBench",
+    )
     args = parser.parse_args()
     main(dataset_filter=args.dataset)

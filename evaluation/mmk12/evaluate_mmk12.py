@@ -2,30 +2,38 @@ import argparse
 import json
 import os
 import random
-import time
 
-from datasets import load_dataset
+from evaluation.utils import DEFAULT_SYSTEM_PROMPT, load_data_split, load_system_prompt
 from qwen_vl_utils import process_vision_info
 from transformers import AutoProcessor
 from vllm import LLM, SamplingParams
 
-ds_collections = {
-    "MMK12": {
-        "root": "FanqingM/MMK12",
-        "split": "test",
-    }
-}
-
-SYSTEM_PROMPT = "You are a helpful assistant."
-
-
-def evaluate_chat_model():
+def evaluate_chat_model(args, llm, processor, stop_token_ids):
     random.seed(args.seed)
+    results_files = []
+    dataset_entries = getattr(args, "dataset_entries", {}) or {}
+    default_source = getattr(args, "dataset_source", "") or ""
+    cache_dir = getattr(args, "dataset_cache_dir", None)
+    system_prompt = getattr(args, "system_prompt_text", "") or load_system_prompt(
+        getattr(args, "system_prompt", ""),
+        default_prompt=DEFAULT_SYSTEM_PROMPT,
+    )
 
     for ds_name in args.datasets:
-        data = load_dataset(ds_collections[ds_name]["root"], cache_dir=os.path.join(os.getcwd(), "dataset/MMK12"))[
-            ds_collections[ds_name]["split"]
-        ]
+        ds_cfg = dataset_entries.get(ds_name, {}) if isinstance(dataset_entries, dict) else {}
+        source = ds_cfg.get("source") or default_source
+        split = ds_cfg.get("split")
+        name = ds_cfg.get("name")
+        if not source or not split:
+            raise ValueError(f"Missing dataset config for {ds_name}: source/split are required.")
+        data = load_data_split(
+            source=source,
+            split=split,
+            cache_dir=cache_dir,
+            name=name,
+        )
+        if args.limit > 0:
+            data = data.select(range(min(args.limit, len(data))))
 
         inputs = []
         for data_item in data:
@@ -36,7 +44,7 @@ def evaluate_chat_model():
                 {
                     "role": "system",
                     "content": [
-                        {"type": "text", "text": SYSTEM_PROMPT},
+                        {"type": "text", "text": system_prompt},
                     ],
                 },
                 {
@@ -57,7 +65,11 @@ def evaluate_chat_model():
                 }
             )
 
-        sampling_params = SamplingParams(temperature=0.0, max_tokens=4096, stop_token_ids=stop_token_ids)
+        sampling_params = SamplingParams(
+            temperature=args.gen_temperature,
+            max_tokens=args.gen_max_tokens,
+            stop_token_ids=stop_token_ids,
+        )
         model_outputs = llm.generate(inputs, sampling_params=sampling_params)
         outputs = []
         for data_item, model_output in zip(data, model_outputs):
@@ -71,14 +83,13 @@ def evaluate_chat_model():
             temp[id] = data_item
 
         print(f"Evaluating {ds_name} ...")
-        time_prefix = time.strftime("%y%m%d%H%M%S", time.localtime())
-        results_file = f"{ds_name}_{time_prefix}.json"
+        results_file = f"{ds_name}.json"
         output_path = os.path.join(args.out_dir, results_file)
         json.dump(temp, open(output_path, "w", encoding="utf-8"), indent=4, ensure_ascii=False)
         print("Results saved to {}".format(output_path))
+        results_files.append(results_file)
 
-        cmd = f"python evaluation/mmk12/extract_calculate.py --output_file {results_file} --output_dir {args.out_dir}"
-        print(cmd)
+    return results_files
 
 
 if __name__ == "__main__":
@@ -88,12 +99,19 @@ if __name__ == "__main__":
     parser.add_argument("--out-dir", type=str, default="results")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--tensor-parallel-size", type=int, default=4)
+    parser.add_argument("--limit", type=int, default=-1, help="Max number of samples per dataset for quick debug.")
+    parser.add_argument("--gen-temperature", type=float, default=0.0)
+    parser.add_argument("--gen-max-tokens", type=int, default=4096)
+    parser.add_argument("--gen-stop-token-ids", type=str, default="", help="Comma-separated stop token ids, empty for none.")
+    parser.add_argument("--dataset-source", type=str, default="", help="Dataset source (HF repo id or local path).")
+    parser.add_argument("--system-prompt", type=str, default="", help="System prompt text or prompt file path.")
     args = parser.parse_args()
 
     if not os.path.exists(args.out_dir):
         os.makedirs(args.out_dir)
 
     args.datasets = args.datasets.split(",")
+    args.dataset_entries = {}
     print("datasets:", args.datasets)
 
     llm = LLM(
@@ -102,6 +120,6 @@ if __name__ == "__main__":
         tensor_parallel_size=args.tensor_parallel_size,
     )
     processor = AutoProcessor.from_pretrained(args.checkpoint, trust_remote_code=True)
-    stop_token_ids = None
+    stop_token_ids = [int(x.strip()) for x in args.gen_stop_token_ids.split(",") if x.strip()] or None
 
-    evaluate_chat_model()
+    evaluate_chat_model(args, llm, processor, stop_token_ids)
