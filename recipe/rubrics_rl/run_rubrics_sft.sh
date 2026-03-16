@@ -41,6 +41,15 @@ DATASET_NUM_PROC=${DATASET_NUM_PROC:-4}
 LORA_RANK=${LORA_RANK:-8}
 LORA_ALPHA=${LORA_ALPHA:-32}
 SWIFT_PYTHON=${SWIFT_PYTHON:-python}
+WANDB_PROJECT=${WANDB_PROJECT:-rubrics-sft}
+WANDB_NAME=${WANDB_NAME:-rubrics-sft-qwen3-vl}
+WANDB_MODE=${WANDB_MODE:-offline}
+WANDB_DIR=${WANDB_DIR:-${BASEDIR}/ms-swift/output/wandb}
+
+export WANDB_PROJECT
+export WANDB_NAME
+export WANDB_MODE
+export WANDB_DIR
 
 python - <<'PY' "${FULL_DATA}" "${TRAIN_DATA}" "${VAL_DATA}" "${TRAIN_RATIO}" "${SPLIT_SEED}"
 import json
@@ -108,5 +117,6 @@ ${SWIFT_PYTHON} -m swift.cli.main sft \
     --warmup_ratio "${WARMUP_RATIO}" \
     --dataset_num_proc "${DATASET_NUM_PROC}" \
     --dataloader_num_workers "${DATALOADER_NUM_WORKERS}" \
+    --report_to wandb \
     --deepspeed zero3 \
     --use_liger_kernel true
