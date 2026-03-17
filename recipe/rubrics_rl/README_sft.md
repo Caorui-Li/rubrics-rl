@@ -59,6 +59,7 @@ python ./recipe/rubrics_rl/convert_rubrics_to_sft.py \
 ```bash
 TRAIN_GPUS=0,1,2,3,4,5,6,7 \
 NPROC_PER_NODE=8 \
+NUM_TRAIN_EPOCHS=3 \
 MODEL_PATH=Qwen/Qwen3-VL-30B-A3B-Instruct \
 ./recipe/rubrics_rl/run_rubrics_sft.sh
 ```
