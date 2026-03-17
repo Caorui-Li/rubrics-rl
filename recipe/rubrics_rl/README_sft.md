@@ -77,7 +77,8 @@ DATASET_NUM_PROC=16 \
 训练脚本会自动：
 
 - 读取 `./dataset/ViRL39K/rubrics_sft.jsonl`
-- 在 `./dataset/ViRL39K` 下切分训练集和验证集
+- 在 `./dataset/ViRL39K` 下切分训练集和验证集 ！！！！！！！！！
+- 所以如果数据更新了，请把./dataset/ViRL39K/rubrics_sft_train.jsonl和./dataset/ViRL39K/rubrics_sft_val.jsonl删了，因为不会自动重复切分！！！！！！！！！
 - 加载 `./recipe/rubrics_rl/sft_system_prompt.txt`
 - 将输出保存到 `./ms-swift/output/rubrics_sft_qwen3_vl`
 - 使用 wandb 离线模式记录训练日志
