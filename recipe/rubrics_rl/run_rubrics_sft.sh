@@ -61,6 +61,10 @@ full_data, train_data, val_data, train_ratio, split_seed = sys.argv[1:]
 train_ratio = float(train_ratio)
 split_seed = int(split_seed)
 
+if os.path.exists(train_data) and os.path.exists(val_data):
+    print(f'skip_split=true train_data={train_data} val_data={val_data}')
+    raise SystemExit(0)
+
 with open(full_data, 'r', encoding='utf-8') as f:
     rows = [line for line in f if line.strip()]
 
