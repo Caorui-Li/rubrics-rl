@@ -1,4 +1,4 @@
-import json
+﻿import json
 import logging
 import os
 import re
@@ -10,6 +10,17 @@ from math_verify import LatexExtractionConfig, parse, verify
 from openai import APITimeoutError, OpenAI
 
 from verl.utils.dataset.rl_dataset import RLHFDataset
+
+# Default system prompt (same as in rubrics_rl.py)
+DEFAULT_SYSTEM_PROMPT = (
+    "Solve the question. The user asks a question, and you solves it. "
+    "You first thinks about the reasoning process in the mind and then provides the user with the answer. "
+    "The answer is in latex format and wrapped in $...$. The final answer must be wrapped using the "
+    "\\\\boxed{} command. The reasoning process and answer are enclosed within <think> </think> and "
+    "<answer> </answer> tags, respectively, i.e., <think> Since $1+1=2$, so the answer is $2$. "
+    "<answer> The answer is $\\\\boxed{2}$ </answer>, which means assistant's output should start with "
+    "<think> and end with </answer>."
+)
 
 """
 A example of rubrics:
@@ -38,25 +49,36 @@ logger = logging.getLogger(__name__)
 openai_api_key = "EMPTY"
 openai_api_base = os.environ.get("LLM_AS_A_JUDGE_BASE", "http://28.12.131.189:8000/v1")
 
-# Set timeout to 300 seconds (5 minutes) for long-running requests
-client = OpenAI(
-    api_key=openai_api_key,
-    base_url=openai_api_base,
-    timeout=300.0,  # 5 minutes timeout
-)
+# Lazily initialize client/model to avoid pickling SSLContext in multiprocessing.
+_client = None
+_model_name = None
 
-model_name = ""
-if openai_api_base:
-    try:
-        response = requests.get(f"{openai_api_base}/models")
-        response.raise_for_status()
-        models = response.json()
-        if models.get("data"):
-            model_name = models["data"][0]["id"]
+
+def _get_client_and_model():
+    global _client, _model_name
+    if _client is None:
+        _client = OpenAI(
+            api_key=openai_api_key,
+            base_url=openai_api_base,
+            timeout=300.0,  # 5 minutes timeout
+        )
+    if _model_name is None:
+        if openai_api_base:
+            try:
+                response = requests.get(f"{openai_api_base}/models")
+                response.raise_for_status()
+                models = response.json()
+                if models.get("data"):
+                    _model_name = models["data"][0]["id"]
+                else:
+                    logger.warning("No models found at the specified API base for reward scoring.")
+                    _model_name = ""
+            except (requests.exceptions.RequestException, KeyError, IndexError) as e:
+                logger.warning(f"Failed to get model from {openai_api_base}: {e}. Reward scoring will be disabled.")
+                _model_name = ""
         else:
-            logger.warning("No models found at the specified API base for reward scoring.")
-    except (requests.exceptions.RequestException, KeyError, IndexError) as e:
-        logger.warning(f"Failed to get model from {openai_api_base}: {e}. Reward scoring will be disabled.")
+            _model_name = ""
+    return _client, _model_name
 
 
 def check_is_valid_verify_response(response_text: str) -> tuple[bool, list]:
@@ -93,6 +115,9 @@ def check_is_valid_verify_response(response_text: str) -> tuple[bool, list]:
                 print(f"Invalid response format: invalid is_satisfied for {item}")
                 return False, []
 
+            # Normalize id to string for stable comparison
+            item["id"] = str(item["id"])
+
         return True, parsed
     except (json.JSONDecodeError, ValueError, AttributeError):
         print(f"Invalid response format: JSON decode error for {response_text}")
@@ -110,11 +135,11 @@ def merge_rubrics_with_verification(original_rubrics: list, verified_list: list)
     Returns:
         List of merged rubric dicts with "criterion", "weight", "id", "is_satisfied"
     """
-    rubric_dict = {r["id"]: r for r in original_rubrics}
+    rubric_dict = {str(r["id"]): r for r in original_rubrics}
     result = []
 
     for verified_item in verified_list:
-        rubric_id = verified_item["id"]
+        rubric_id = str(verified_item["id"])
         if rubric_id not in rubric_dict:
             raise ValueError(f"Rubric id {rubric_id} not found in original rubrics")
 
@@ -143,12 +168,13 @@ def verify_rubric(rubrics: list, solution_str: str, prompt: str, max_retries: in
     Returns:
         list: List of verified rubrics, or None if all retries failed (fallback mechanism)
     """
-    rubric_ids = {r["id"] for r in rubrics}
+    rubric_ids = {str(r["id"]) for r in rubrics}
     rubric_json = json.dumps(rubrics, indent=2)
     formatted_prompt = verify_prompt.format(prompt=prompt, response=solution_str, rubric=rubric_json)
 
     for attempt in range(max_retries):
         try:
+            client, model_name = _get_client_and_model()
             response = client.chat.completions.create(
                 model=model_name,
                 messages=[{"role": "user", "content": formatted_prompt}],
@@ -228,7 +254,7 @@ def format_reward(response: str) -> float:
     Returns:
         float: 0.5 if format is correct, 0.0 otherwise
     """
-    format_pattern = r"^<think>(?:(?!</think>).)*</think><answer>(?:(?!</answer>).)*</answer>\Z"
+    format_pattern = r"^<think>.*?</think>\s*<answer>.*?</answer>\s*$"
     
     think_count = response.count("<think>")
     answer_count = response.count("<answer>")
@@ -366,9 +392,59 @@ def compute_score(data_source: str, solution_str: str, ground_truth: str, extra_
 
 
 class RubricsRLHFDataset(RLHFDataset):
+    
+    def _build_messages(self, example: dict):
+        # Directly extract messages from example (same logic as RLHFDataset._build_messages)
+        import re
+        messages: list = example.pop(self.prompt_key)
+
+        # Handle image/video content if present (same logic as RLHFDataset._build_messages)
+        if self.image_key in example or self.video_key in example:
+            for message in messages:
+                content = message["content"]
+                content_list = []
+                segments = re.split("(<image>|<video>)", content)
+                segments = [item for item in segments if item != ""]
+                for segment in segments:
+                    if segment == "<image>":
+                        content_list.append({"type": "image"})
+                    elif segment == "<video>":
+                        content_list.append({"type": "video"})
+                    else:
+                        content_list.append({"type": "text", "text": segment})
+                message["content"] = content_list
+
+        # Add custom system prompt directly to dataset
+        SYSTEM_PROMPT = DEFAULT_SYSTEM_PROMPT
+
+        # Check if system prompt already exists
+        has_system = any(msg.get("role") == "system" for msg in messages)
+        if not has_system:
+            messages.insert(0, {"role": "system", "content": SYSTEM_PROMPT})
+            
+        # # Print final message for debugging
+        # print("=" * 80)
+        # print("[_BUILD_MESSAGES] Final Messages:")
+        # for i, msg in enumerate(messages):
+        #     print(f"  [{i}] role={msg.get('role')}, content={msg.get('content')}")
+        # print("=" * 80)
+
+        return messages
+
+
     def __getitem__(self, item):
         row_dict = super().__getitem__(item)
-        row_dict["extra_info"]["rubrics"] = json.loads(item["rubrics"])
+
+        rubrics_raw = row_dict.get("rubrics")
+        if rubrics_raw is None and isinstance(row_dict.get("extra_info"), dict):
+            rubrics_raw = row_dict["extra_info"].get("rubrics")
+
+        rubrics = json.loads(rubrics_raw) if isinstance(rubrics_raw, str) else rubrics_raw
+
+        if "extra_info" not in row_dict or row_dict["extra_info"] is None:
+            row_dict["extra_info"] = {}
+        if rubrics is not None:
+            row_dict["extra_info"]["rubrics"] = rubrics
 
         # assert the necessary fields are present
         assert "rubrics" in row_dict["extra_info"], "rubrics not found in extra_info"
@@ -416,6 +492,7 @@ Return ONLY the JSON array, no other text. For example:
     "id": 3,
     "is_satisfied": "yes"
   }}
+  ......
 ]
 ```
 """
