@@ -2,38 +2,38 @@
 
 set -x
 
-export NO_PROXY="localhost,127.0.0.1,100.98.129.8"
-export no_proxy="localhost,127.0.0.1,100.98.129.8"
+# export NO_PROXY="localhost,127.0.0.1,100.98.129.8"
+# export no_proxy="localhost,127.0.0.1,100.98.129.8"
 
-export JUDGE_MODEL="/mnt/shared-storage-user/colab-share/liujiaheng/pjlab-oss/models/QwenLM/Qwen2.5-32B-Instruct"
-export LLM_AS_A_JUDGE_BASE="http://100.99.11.26:8000/v1"
+export JUDGE_MODEL=${JUGDE_MODEL:-"/mnt/shared-storage-user/colab-share/liujiaheng/pjlab-oss/models/QwenLM/Qwen2.5-32B-Instruct"}
+export LLM_AS_A_JUDGE_BASE=${LLM_AS_A_JUDGE_BASE:-"http://100.99.11.26:8000/v1"}
 export JUDGE_MODEL_API_KEY="EMPTY"
 
-export WANDB_API_KEY=wandb_*****************************************
+export WANDB_API_KEY=${WANDB_API_KEY:-wandb_*****************************************}
 export WANDB_MODE=offline
 
 export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
 
-export MAX_CONCURRENT_JUDGE_REQUESTS=6
+export MAX_CONCURRENT_JUDGE_REQUESTS=${MAX_CONCURRENT_JUDGE_REQUESTS:-6}
 export JUDGE_MIN_INTERVAL_SEC=0.005
 
 export DEBUG_JUDGE_OUTPUT=1
 export JUDGE_OUTPUT_MAX_CHARS=4000
-export JUDGE_DEBUG_JSONL_PATH=./judge_verify_debug_0309.jsonl
+export JUDGE_DEBUG_JSONL_PATH=${JUDGE_DEBUG_JSONL_PATH:-./judge_verify_debug_0309.jsonl}
 export MAX_CONCURRENT_JUDGE_REQUESTS=2
 export JUDGE_MIN_INTERVAL_SEC=0.2
 
 
 
 PROJECT_NAME="rubrics_rl"
-EXPERIMENT_NAME="Baseline-RubricsRL-0309"
+EXPERIMENT_NAME="Baseline-RubricsRL-pipeline-all"
 
 BASEDIR=${PWD}
-SAVE_CHECKPOINT_DIR=${BASEDIR}/verl_checkpoints_0309
-DATASET_TRAIN=${BASEDIR}/dataset/ViRL39K/rubrics_filtered_train.parquet
-DATASET_VAL=${BASEDIR}/dataset/ViRL39K/rubrics_filtered_val.parquet
+SAVE_CHECKPOINT_DIR=${SAVE_CHECKPOINT_DIR:-${BASEDIR}/verl_checkpoints}
+DATASET_TRAIN=${BASEDIR}/dataset/ViRL39K/rubrics_pipeline_all_train.parquet
+DATASET_VAL=${BASEDIR}/dataset/ViRL39K/rubrics_pipeline_all_val.parquet
 
-REF_MODEL_PATH=/mnt/shared-storage-user/colab-share/liujiaheng/pjlab-oss/models/QwenVL/Qwen2.5-VL-7B-Instruct
+REF_MODEL_PATH=${REF_MODEL_PATH:-/mnt/shared-storage-user/colab-share/liujiaheng/pjlab-oss/models/QwenVL/Qwen2.5-VL-7B-Instruct}
 set -x
 ENGINE=${1:-vllm}
 
@@ -85,6 +85,6 @@ python3 -m verl.trainer.main_ppo \
     custom_reward_function.path=recipe/rubrics_rl/rubrics_rl.py \
     custom_reward_function.name=compute_score \
     +data.custom_cls.path=recipe/rubrics_rl/rubrics_rl.py \
-    +trainer.rollout_data_dir="./rollout_dump_rubrics-rl-0309" \
+    +trainer.rollout_data_dir="./rollout_dump_rubrics-rl-pipeline-all" \
     +data.custom_cls.name=RubricsRLHFDataset $@
 
