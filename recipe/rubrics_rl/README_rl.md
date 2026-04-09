@@ -1,6 +1,6 @@
 # Rubrics RL 训练操作指南（rubrics_pipeline_all）
 
-以下命令均以仓库根目录 `verl-exp-rubrics-rl` 为相对路径基准。
+以下命令均以仓库根目录 `verl-exp` 为相对路径基准。
 
 本流程包含两个节点：
 
@@ -19,7 +19,8 @@
 直接从 Hugging Face 下载到./dataset/ViRL39K：
 
 ```bash
- 
+hf download TIGER-Lab/ViRL39K --repo-type=dataset \
+    --local-dir ./dataset/ViRL39K
 
 hf download CaoruiLi/test-sft \
   rubrics_pipeline_all_train.jsonl \
@@ -30,6 +31,10 @@ hf download CaoruiLi/test-sft \
   rubrics_pipeline_all_val.jsonl \
   --repo-type dataset \
   --local-dir ./dataset/ViRL39K
+
+cd ./dataset/ViRL39K
+unzip images
+
 ```
 
 ---
