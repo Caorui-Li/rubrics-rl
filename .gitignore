@@ -1,4 +1,8 @@
 
+# datasets and downloaded data
+data/
+datasets/
+
 **/*.pt
 **/checkpoints
 **/wget-log

@@ -208,7 +208,7 @@ def parse_rubrics(text: str) -> Optional[list[dict[str, Any]]]:
         normalized.append(dict(item))
 
     for idx, rubric in enumerate(normalized, start=1):
-        rubric.setdefault("id", idx)
+        rubric["id"] = idx
 
     return normalized
 

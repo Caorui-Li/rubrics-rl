@@ -46,7 +46,7 @@ A example of rubrics:
 """
 logger = logging.getLogger(__name__)
 
-openai_api_key = "EMPTY"
+openai_api_key = os.environ.get("JUDGE_MODEL_API_KEY", "EMPTY")
 openai_api_base = os.environ.get("LLM_AS_A_JUDGE_BASE", "http://28.12.131.189:8000/v1")
 
 # Lazily initialize client/model to avoid pickling SSLContext in multiprocessing.
@@ -60,10 +60,14 @@ def _get_client_and_model():
         _client = OpenAI(
             api_key=openai_api_key,
             base_url=openai_api_base,
-            timeout=300.0,  # 5 minutes timeout
+            timeout=300.0,
         )
     if _model_name is None:
-        if openai_api_base:
+        # Prefer explicit JUDGE_MODEL env var; fall back to auto-discovery via /models
+        explicit = os.environ.get("JUDGE_MODEL", "").strip()
+        if explicit:
+            _model_name = explicit
+        elif openai_api_base:
             try:
                 response = requests.get(f"{openai_api_base}/models")
                 response.raise_for_status()

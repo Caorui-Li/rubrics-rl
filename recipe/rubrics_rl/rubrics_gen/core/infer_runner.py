@@ -76,6 +76,11 @@ def run_vllm(
     if filtered_save_path is None:
         filtered_save_path = save_path.replace(".jsonl", "_filter.jsonl")
 
+    if not keep_raw:
+        for path in (save_path, filtered_save_path):
+            if path and os.path.exists(path):
+                os.remove(path)
+
     if keep_raw and os.path.exists(save_path):
         with open(save_path, "r", encoding="utf-8") as handle:
             generation_results = [json.loads(line) for line in handle]
