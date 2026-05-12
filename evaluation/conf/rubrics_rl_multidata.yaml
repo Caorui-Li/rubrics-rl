@@ -1,0 +1,11 @@
+defaults:
+  - run_all
+  - _self_
+
+# TODO: 改为实际的 checkpoint 路径，例如 dataset/models/rubrics-rl-multidata-step80
+checkpoint: dataset/models/rubrics-rl-multidata-stepXX
+
+# TODO: 改为对应的模型名称，用于输出目录命名
+model_name: rubrics-rl-multidata-stepXX
+
+system_prompt: evaluation/conf/prompts/train.txt
