@@ -6,11 +6,19 @@ set -x
 # ── Paths ──────────────────────────────────────────────────────────────────
 BASEDIR=$(cd "$(dirname "$0")/../.." && pwd)
 
-WETHINK_JSONL="${BASEDIR}/data/wethink_rubrics/wethink_rubrics_20k_processed.jsonl"
-WETHINK_IMAGES="${BASEDIR}/data/wethink_rubrics/images"
+# DATA_ROOT: root directory for all downloaded datasets and extracted images.
+# Override to point to a large-storage mount when local disk is limited.
+# Example: export DATA_ROOT=/mnt/storage/data
+export DATA_ROOT=${DATA_ROOT:-"${BASEDIR}/data"}
 
-GEOTHOUGHT_JSONL="${BASEDIR}/data/geothought_rubrics/geothought_rubrics_processed.jsonl"
-GEOTHOUGHT_IMAGES="${BASEDIR}/data/geothought_rubrics/images"
+WETHINK_JSONL="${DATA_ROOT}/wethink_rubrics/wethink_rubrics_20k_processed.jsonl"
+WETHINK_IMAGES="${DATA_ROOT}/wethink_rubrics/images"
+
+GEOTHOUGHT_JSONL="${DATA_ROOT}/geothought_rubrics/geothought_rubrics_processed.jsonl"
+GEOTHOUGHT_IMAGES="${DATA_ROOT}/geothought_rubrics/images"
+
+VIRL39K_RUBRICS_JSONL="${DATA_ROOT}/virl39k_rubrics/virl39k_rubrics_processed.jsonl"
+VIRL39K_RUBRICS_IMAGES="${DATA_ROOT}/virl39k_rubrics/images"
 
 DATASET_DIR="${BASEDIR}/dataset/rubrics_mixed"
 DATASET_TRAIN="${DATASET_DIR}/mixed_train.parquet"
@@ -53,7 +61,7 @@ export JUDGE_OUTPUT_MAX_CHARS=4000
 export JUDGE_DEBUG_JSONL_PATH=${JUDGE_DEBUG_JSONL_PATH:-"${BASEDIR}/judge_verify_debug.jsonl"}
 
 PROJECT_NAME="rubrics_rl"
-EXPERIMENT_NAME="RubricsRL-wethink-geothought"
+EXPERIMENT_NAME="RubricsRL-wethink-geothought-virl39k"
 ENGINE=${1:-vllm}
 
 # ── Step 1: Extract wethink images ─────────────────────────────────────────
@@ -68,24 +76,32 @@ echo "Step 2: Extract geothought images"
 echo "════════════════════════════════════════"
 python3 "${BASEDIR}/data/extract_geothought_images.py"
 
-# ── Step 3: Convert to verl parquet ────────────────────────────────────────
+# ── Step 3: Extract virl39k rubrics images ─────────────────────────────────
 echo "════════════════════════════════════════"
-echo "Step 3: Convert to verl parquet"
+echo "Step 3: Extract virl39k rubrics images"
+echo "════════════════════════════════════════"
+python3 "${BASEDIR}/data/extract_virl39k_rubrics_images.py"
+
+# ── Step 4: Convert to verl parquet ────────────────────────────────────────
+echo "════════════════════════════════════════"
+echo "Step 4: Convert to verl parquet"
 echo "════════════════════════════════════════"
 python3 "${BASEDIR}/recipe/rubrics_rl/rubrics_gen/convert_wethink_to_verl.py" \
     --input_jsonl \
         "${WETHINK_JSONL}" \
         "${GEOTHOUGHT_JSONL}" \
+        "${VIRL39K_RUBRICS_JSONL}" \
     --output_parquet "${DATASET_DIR}/mixed.parquet" \
     --image_base_paths \
         "${WETHINK_IMAGES}" \
         "${GEOTHOUGHT_IMAGES}" \
+        "${VIRL39K_RUBRICS_IMAGES}" \
     --train_val_split 0.9 \
     --seed 42
 
-# ── Step 4: Train ──────────────────────────────────────────────────────────
+# ── Step 5: Train ──────────────────────────────────────────────────────────
 echo "════════════════════════════════════════"
-echo "Step 4: Training"
+echo "Step 5: Training"
 echo "════════════════════════════════════════"
 python3 -m verl.trainer.main_ppo \
     algorithm.adv_estimator=grpo \
@@ -135,5 +151,5 @@ python3 -m verl.trainer.main_ppo \
     custom_reward_function.name=compute_score \
     +data.custom_cls.path=recipe/rubrics_rl/rubrics_rl.py \
     +data.custom_cls.name=RubricsRLHFDataset \
-    +trainer.rollout_data_dir="${BASEDIR}/rollout_dump_rubrics-rl-multidata" \
+    +trainer.rollout_data_dir="${BASEDIR}/rollout_dump_rubrics-rl-multidata-3ds" \
     $@
