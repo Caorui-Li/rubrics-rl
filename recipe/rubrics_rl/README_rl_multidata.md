@@ -55,20 +55,58 @@ hf download TIGER-Lab/ViRL39K --repo-type=dataset --local-dir ${DATA_ROOT}/virl3
 
 ---
 
-## 2. 数据处理 + 训练（一键启动）
+## 2. 数据处理（单节点，运行一次）
 
-完成数据下载后，直接运行训练脚本。脚本会自动完成以下步骤：
-
-1. 从 wethink zip 分片中提取所需图片 → `${DATA_ROOT}/wethink_rubrics/images/`
-2. 从 geothought Parquet 中提取所需图片 → `${DATA_ROOT}/geothought_rubrics/images/`
-3. 从 virl39k zip 分片中提取所需图片 → `${DATA_ROOT}/virl39k_rubrics/images/`
-4. 三份数据合并转换为 verl parquet（9:1 train/val split）→ `dataset/rubrics_mixed/`
-5. 启动 RL 训练
+在任意一台节点上运行，提取图片并生成训练所需的 parquet：
 
 ```bash
-cd verl-exp   # 仓库根目录
+cd verl-exp
+export DATA_ROOT=/mnt/storage/data   # 各训练节点均可访问的共享路径
+bash ./recipe/rubrics_rl/prepare_data_multidata.sh
+```
+
+完成后 parquet 输出到 `dataset/rubrics_mixed/`。
+
+---
+
+## 3. 训练
+
+### 单节点
+
+```bash
+cd verl-exp
+export REF_MODEL_PATH=/mnt/storage/models/Qwen2.5-VL-7B-Instruct
+export JUDGE_MODEL="gpt-4o"
+export LLM_AS_A_JUDGE_BASE="https://api.openai.com/v1"
+export JUDGE_MODEL_API_KEY="sk-..."
 bash ./recipe/rubrics_rl/run_rubrics_rl_multidata.sh
 ```
+
+### 多节点
+
+编辑 `recipe/rubrics_rl/launch_multinode.sh`，填入各节点 IP：
+
+```bash
+NODES=(
+    "192.168.1.10"   # node 0 — master
+    "192.168.1.11"   # node 1
+    "192.168.1.12"   # node 2
+    "192.168.1.13"   # node 3
+)
+```
+
+然后在任意一台机器上运行一次：
+
+```bash
+export REF_MODEL_PATH=/mnt/storage/models/Qwen2.5-VL-7B-Instruct
+export JUDGE_MODEL="gpt-4o"
+export LLM_AS_A_JUDGE_BASE="https://api.openai.com/v1"
+export JUDGE_MODEL_API_KEY="sk-..."
+export DATA_ROOT=/mnt/storage/data
+bash ./recipe/rubrics_rl/launch_multinode.sh
+```
+
+> **前提**：launcher 所在机器可免密 SSH 到所有训练节点；`dataset/rubrics_mixed/` 在各节点上路径一致（共享存储或提前同步）。
 
 ---
 
@@ -117,6 +155,10 @@ export JUDGE_MODEL_API_KEY="EMPTY"
 | `LLM_AS_A_JUDGE_BASE` | 必填 | Judge API base URL，见第 3 节 | 无 |
 | `JUDGE_MODEL_API_KEY` | 必填 | Judge API key，见第 3 节 | 无 |
 | `DATA_ROOT` | 选填 | 数据集根目录，磁盘有限时指向大容量挂载盘 | `<repo>/data` |
+| `NNODES` | 选填 | 训练节点总数 | `1` |
+| `NODE_RANK` | 选填 | 当前节点编号（0 为主节点） | `0` |
+| `MASTER_ADDR` | 选填 | 主节点 IP | `127.0.0.1` |
+| `MASTER_PORT` | 选填 | 主节点通信端口 | `29500` |
 | `WANDB_API_KEY` | 选填 | WandB 日志 key | `""` （不上传） |
 | `SAVE_CHECKPOINT_DIR` | 选填 | checkpoint 保存路径 | `./verl_checkpoints` |
 | `MAX_CONCURRENT_JUDGE_REQUESTS` | 选填 | judge 并发请求数，视 API 速率限制调整 | `6` |
