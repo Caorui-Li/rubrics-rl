@@ -47,14 +47,21 @@ def unzip(zip_path: Path, dest: Path) -> None:
         return
     dest.mkdir(parents=True, exist_ok=True)
     print(f"Unzipping {zip_path} -> {dest} ...")
-    cmd = ["unzip", "-q", "-o", str(zip_path), "-d", str(dest)]
-    rc = subprocess.call(cmd)
-    if rc != 0:
+    fallback = False
+    try:
+        rc = subprocess.call(["unzip", "-q", "-o", str(zip_path), "-d", str(dest)])
+        if rc != 0:
+            print(f"unzip exited with rc={rc}, falling back to zipfile.")
+            fallback = True
+    except FileNotFoundError:
+        print("unzip binary not found, falling back to Python zipfile (slower).")
+        fallback = True
+    if fallback:
         try:
             with zipfile.ZipFile(zip_path) as zf:
                 zf.extractall(dest)
         except Exception as e:
-            sys.exit(f"unzip failed (rc={rc}) and zipfile fallback errored: {e}")
+            sys.exit(f"zipfile fallback errored: {e}")
     SENTINEL.write_text("ok\n")
     print("Unzip complete.")
 
