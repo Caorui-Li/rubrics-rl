@@ -64,40 +64,49 @@ PROJECT_NAME="rubrics_rl"
 EXPERIMENT_NAME="RubricsRL-wethink-geothought-virl39k"
 ENGINE=${1:-vllm}
 
-# ── Step 1: Extract wethink images ─────────────────────────────────────────
-echo "════════════════════════════════════════"
-echo "Step 1: Extract wethink images"
-echo "════════════════════════════════════════"
-python3 "${BASEDIR}/data/extract_wethink_images.py"
+# ── Data prep (Steps 1-4) ──────────────────────────────────────────────────
+# Skip when the final parquets already exist (idempotent re-runs) and only
+# run on NODE_RANK=0 to avoid racing writers on shared FS during multinode.
+if [[ -f "${DATASET_TRAIN}" && -f "${DATASET_VAL}" ]]; then
+    echo "Found ${DATASET_TRAIN} and ${DATASET_VAL}, skipping data prep."
+elif [[ "${NODE_RANK:-0}" != "0" ]]; then
+    echo "NODE_RANK=${NODE_RANK} > 0, waiting for master to finish data prep ..."
+    while [[ ! -f "${DATASET_TRAIN}" || ! -f "${DATASET_VAL}" ]]; do
+        sleep 10
+    done
+    echo "Master finished data prep, continuing."
+else
+    echo "════════════════════════════════════════"
+    echo "Step 1: Extract wethink images"
+    echo "════════════════════════════════════════"
+    python3 "${BASEDIR}/data/extract_wethink_images.py"
 
-# ── Step 2: Extract geothought images ──────────────────────────────────────
-echo "════════════════════════════════════════"
-echo "Step 2: Extract geothought images"
-echo "════════════════════════════════════════"
-python3 "${BASEDIR}/data/extract_geothought_images.py"
+    echo "════════════════════════════════════════"
+    echo "Step 2: Extract geothought images"
+    echo "════════════════════════════════════════"
+    python3 "${BASEDIR}/data/extract_geothought_images.py"
 
-# ── Step 3: Extract virl39k rubrics images ─────────────────────────────────
-echo "════════════════════════════════════════"
-echo "Step 3: Extract virl39k rubrics images"
-echo "════════════════════════════════════════"
-python3 "${BASEDIR}/data/extract_virl39k_rubrics_images.py"
+    echo "════════════════════════════════════════"
+    echo "Step 3: Extract virl39k rubrics images"
+    echo "════════════════════════════════════════"
+    python3 "${BASEDIR}/data/extract_virl39k_rubrics_images.py"
 
-# ── Step 4: Convert to verl parquet ────────────────────────────────────────
-echo "════════════════════════════════════════"
-echo "Step 4: Convert to verl parquet"
-echo "════════════════════════════════════════"
-python3 "${BASEDIR}/recipe/rubrics_rl/rubrics_gen/convert_wethink_to_verl.py" \
-    --input_jsonl \
-        "${WETHINK_JSONL}" \
-        "${GEOTHOUGHT_JSONL}" \
-        "${VIRL39K_RUBRICS_JSONL}" \
-    --output_parquet "${DATASET_DIR}/mixed.parquet" \
-    --image_base_paths \
-        "${WETHINK_IMAGES}" \
-        "${GEOTHOUGHT_IMAGES}" \
-        "${VIRL39K_RUBRICS_IMAGES}" \
-    --train_val_split 0.9 \
-    --seed 42
+    echo "════════════════════════════════════════"
+    echo "Step 4: Convert to verl parquet"
+    echo "════════════════════════════════════════"
+    python3 "${BASEDIR}/recipe/rubrics_rl/rubrics_gen/convert_wethink_to_verl.py" \
+        --input_jsonl \
+            "${WETHINK_JSONL}" \
+            "${GEOTHOUGHT_JSONL}" \
+            "${VIRL39K_RUBRICS_JSONL}" \
+        --output_parquet "${DATASET_DIR}/mixed.parquet" \
+        --image_base_paths \
+            "${WETHINK_IMAGES}" \
+            "${GEOTHOUGHT_IMAGES}" \
+            "${VIRL39K_RUBRICS_IMAGES}" \
+        --train_val_split 0.9 \
+        --seed 42
+fi
 
 # ── Step 5: Train ──────────────────────────────────────────────────────────
 echo "════════════════════════════════════════"
@@ -142,8 +151,8 @@ python3 -m verl.trainer.main_ppo \
     trainer.logger="wandb" \
     trainer.project_name="${PROJECT_NAME}" \
     trainer.experiment_name="${EXPERIMENT_NAME}" \
-    trainer.n_gpus_per_node=8 \
-    trainer.nnodes=1 \
+    trainer.n_gpus_per_node=${N_GPUS_PER_NODE:-8} \
+    trainer.nnodes=${NNODES:-1} \
     trainer.save_freq=20 \
     trainer.test_freq=5 \
     trainer.total_epochs=4 \
