@@ -179,13 +179,35 @@ def verify_rubric(rubrics: list, solution_str: str, prompt: str, max_retries: in
     for attempt in range(max_retries):
         try:
             client, model_name = _get_client_and_model()
-            response = client.chat.completions.create(
-                model=model_name,
-                messages=[{"role": "user", "content": formatted_prompt}],
-                temperature=0.1,
-            )
+            chat_kwargs: dict = {
+                "model": model_name,
+                "messages": [{"role": "user", "content": formatted_prompt}],
+                "temperature": 0.1,
+            }
+            # JUDGE_DISABLE_THINKING=1 routes through vLLM's chat_template_kwargs to
+            # turn off Qwen3-style <think>...</think> output. Required when the judge
+            # is a Qwen3 model: with thinking enabled, the model emits all of its
+            # token budget into reasoning and returns content=null, which downstream
+            # JSON parsing then chokes on. Harmless for other vLLM-hosted judges that
+            # do not honor the flag; for true OpenAI / DeepSeek endpoints leave it
+            # unset.
+            if os.environ.get("JUDGE_DISABLE_THINKING", "0") == "1":
+                chat_kwargs["extra_body"] = {
+                    "chat_template_kwargs": {"enable_thinking": False}
+                }
+            response = client.chat.completions.create(**chat_kwargs)
 
-            response_text = response.choices[0].message.content.strip()
+            raw_content = response.choices[0].message.content
+            if raw_content is None:
+                print(
+                    f"Judge returned content=None (attempt {attempt + 1}/{max_retries}); "
+                    "likely thinking-only output, set JUDGE_DISABLE_THINKING=1 for Qwen3. Retrying..."
+                )
+                if attempt < max_retries - 1:
+                    time.sleep(min(2 ** attempt, 10))
+                    continue
+                return None
+            response_text = raw_content.strip()
             is_valid, verified_list = check_is_valid_verify_response(response_text)
 
             if is_valid:
