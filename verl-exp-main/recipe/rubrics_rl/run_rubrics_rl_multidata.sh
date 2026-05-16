@@ -1,19 +1,20 @@
 #!/bin/bash
-# Training script — run on every node simultaneously after data preparation.
-# Single-node: run once directly.
-# Multi-node:  set NNODES / NODE_RANK / MASTER_ADDR on each node, then run simultaneously.
+# Training script for verl PPO with Ray.
+# Single-node: this script auto-starts a local Ray cluster.
+# Multi-node:  first bring up the Ray cluster on every node (head on rank 0,
+#              workers via `ray start --address=...`), then run THIS script
+#              ONCE on the head node only. See launch_multinode.sh for the
+#              exact commands to paste on each node.
 
 set -euo pipefail
 set -x
 
 BASEDIR=$(cd "$(dirname "$0")/../.." && pwd)
 
-# ── Multi-node configuration ────────────────────────────────────────────────
-# Single-node defaults — no changes needed for single-node runs.
+# ── Cluster configuration ──────────────────────────────────────────────────
+# Set NNODES on the head node before running. Default: single-node.
 NNODES=${NNODES:-1}
-NODE_RANK=${NODE_RANK:-0}
-MASTER_ADDR=${MASTER_ADDR:-"127.0.0.1"}
-MASTER_PORT=${MASTER_PORT:-29500}
+N_GPUS_PER_NODE=${N_GPUS_PER_NODE:-8}
 
 # ── Paths ──────────────────────────────────────────────────────────────────
 DATASET_DIR="${BASEDIR}/dataset/rubrics_mixed"
@@ -48,13 +49,17 @@ export JUDGE_MODEL_API_KEY=${JUDGE_MODEL_API_KEY:?'JUDGE_MODEL_API_KEY is requir
 export WANDB_API_KEY=${WANDB_API_KEY:-""}
 export WANDB_MODE=offline
 
-export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
-
 export MAX_CONCURRENT_JUDGE_REQUESTS=${MAX_CONCURRENT_JUDGE_REQUESTS:-6}
 export JUDGE_MIN_INTERVAL_SEC=0.005
 export DEBUG_JUDGE_OUTPUT=1
 export JUDGE_OUTPUT_MAX_CHARS=4000
 export JUDGE_DEBUG_JSONL_PATH=${JUDGE_DEBUG_JSONL_PATH:-"${BASEDIR}/judge_verify_debug.jsonl"}
+
+# Multi-node: connect to the already-running Ray cluster on the head node.
+# Single-node: leave unset so ray.init() starts a fresh local cluster.
+if [ "${NNODES}" -gt 1 ]; then
+    export RAY_ADDRESS=${RAY_ADDRESS:-"auto"}
+fi
 
 PROJECT_NAME="rubrics_rl"
 EXPERIMENT_NAME="RubricsRL-wethink-geothought-virl39k"
@@ -62,15 +67,9 @@ ENGINE=${1:-vllm}
 
 # ── Training ───────────────────────────────────────────────────────────────
 echo "════════════════════════════════════════"
-echo "Training (node ${NODE_RANK}/${NNODES})"
+echo "Training on Ray cluster: ${NNODES} nodes × ${N_GPUS_PER_NODE} GPUs"
 echo "════════════════════════════════════════"
-torchrun \
-    --nproc_per_node=8 \
-    --nnodes="${NNODES}" \
-    --node_rank="${NODE_RANK}" \
-    --master_addr="${MASTER_ADDR}" \
-    --master_port="${MASTER_PORT}" \
-    -m verl.trainer.main_ppo \
+python -m verl.trainer.main_ppo \
     algorithm.adv_estimator=grpo \
     data.train_files="${DATASET_TRAIN}" \
     data.val_files="${DATASET_VAL}" \
@@ -109,7 +108,7 @@ torchrun \
     trainer.logger="wandb" \
     trainer.project_name="${PROJECT_NAME}" \
     trainer.experiment_name="${EXPERIMENT_NAME}" \
-    trainer.n_gpus_per_node=8 \
+    trainer.n_gpus_per_node="${N_GPUS_PER_NODE}" \
     trainer.nnodes="${NNODES}" \
     trainer.save_freq=20 \
     trainer.test_freq=5 \
