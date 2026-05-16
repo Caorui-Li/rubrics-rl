@@ -1,0 +1,6 @@
+Input Data
+Query:
+{query}
+
+Reference CoT (Ground Truth):
+{reference_cot}

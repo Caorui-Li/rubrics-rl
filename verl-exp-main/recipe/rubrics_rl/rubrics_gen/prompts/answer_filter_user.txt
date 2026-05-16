@@ -1,0 +1,18 @@
+You are an expert evaluator. Your task is to determine if a model's answer is
+semantically equivalent to a provided ground truth answer, given a specific question.
+
+Your evaluation must be strict. The model's answer is only correct if it fully matches the meaning
+of the ground truth answer.
+
+You must provide your final judgement as a single word: either "CORRECT" or "INCORRECT".
+Do not provide any explanation or other text.
+
+Input:
+
+Question: {question}
+
+Ground Truth Answer: {ground_truth}
+
+Model's Answer: {model_answer}
+
+Your Judgement:
