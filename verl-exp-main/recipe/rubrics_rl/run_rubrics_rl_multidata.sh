@@ -1,19 +1,19 @@
 #!/bin/bash
-# Training script — run on every node simultaneously after data preparation.
-# Single-node: run once directly.
-# Multi-node:  set NNODES / NODE_RANK / MASTER_ADDR on each node, then run simultaneously.
+# Training script — run on the head node after data preparation.
+# Single-node: run directly.
+# Multi-node:  start Ray cluster first with launch_multinode.sh, then this
+#              script runs once on the head node with RAY_ADDRESS=auto.
 
 set -euo pipefail
 set -x
 
 BASEDIR=$(cd "$(dirname "$0")/../.." && pwd)
 
-# ── Multi-node configuration ────────────────────────────────────────────────
-# Single-node defaults — no changes needed for single-node runs.
+# ── Multi-node configuration (Ray) ─────────────────────────────────────────
+# Single-node: no changes needed.
+# Multi-node:  set NNODES to total node count; launch_multinode.sh sets RAY_ADDRESS=auto.
 NNODES=${NNODES:-1}
-NODE_RANK=${NODE_RANK:-0}
-MASTER_ADDR=${MASTER_ADDR:-"127.0.0.1"}
-MASTER_PORT=${MASTER_PORT:-29500}
+RAY_ADDRESS=${RAY_ADDRESS:-""}
 
 # ── Paths ──────────────────────────────────────────────────────────────────
 DATASET_DIR="${BASEDIR}/dataset/rubrics_mixed"
@@ -62,15 +62,16 @@ ENGINE=${1:-vllm}
 
 # ── Training ───────────────────────────────────────────────────────────────
 echo "════════════════════════════════════════"
-echo "Training (node ${NODE_RANK}/${NNODES})"
+echo "Training (${NNODES} node(s), Ray-based)"
 echo "════════════════════════════════════════"
-torchrun \
-    --nproc_per_node=8 \
-    --nnodes="${NNODES}" \
-    --node_rank="${NODE_RANK}" \
-    --master_addr="${MASTER_ADDR}" \
-    --master_port="${MASTER_PORT}" \
-    -m verl.trainer.main_ppo \
+
+# For multi-node Ray clusters, pass the Ray head address.
+RAY_ADDR_ARG=()
+if [ -n "${RAY_ADDRESS}" ]; then
+    RAY_ADDR_ARG=("ray_kwargs.ray_init.address=${RAY_ADDRESS}")
+fi
+
+python3 -m verl.trainer.main_ppo \
     algorithm.adv_estimator=grpo \
     data.train_files="${DATASET_TRAIN}" \
     data.val_files="${DATASET_VAL}" \
@@ -119,4 +120,5 @@ torchrun \
     +data.custom_cls.path=recipe/rubrics_rl/rubrics_rl.py \
     +data.custom_cls.name=RubricsRLHFDataset \
     +trainer.rollout_data_dir="${BASEDIR}/rollout_dump_rubrics-rl-multidata-3ds" \
+    "${RAY_ADDR_ARG[@]}" \
     $@

@@ -1,25 +1,28 @@
 #!/bin/bash
-# Multi-node training launcher.
+# Multi-node training launcher (Ray-based verl).
 # Run prepare_data_multidata.sh first (once, on any single node).
-# Then configure NODES below and run this script once — it SSHes into every
-# node and starts run_rubrics_rl_multidata.sh with the correct NODE_RANK.
+#
+# This script:
+#   1. Starts a Ray head on NODES[0]
+#   2. Starts Ray workers on the remaining nodes
+#   3. Runs the training script once on the head node
 
 set -euo pipefail
 
 # ── Node configuration ─────────────────────────────────────────────────────
-# List all node IPs/hostnames in order; index 0 is the master node.
+# List all node IPs/hostnames in order; index 0 is the head node.
 NODES=(
-    "10.0.0.1"   # node 0 — master
+    "10.0.0.1"   # node 0 — Ray head
     "10.0.0.2"   # node 1
     # "10.0.0.3" # add more nodes here
 )
 
-MASTER_ADDR="${NODES[0]}"
-MASTER_PORT=${MASTER_PORT:-29500}
+HEAD="${NODES[0]}"
+RAY_PORT=${RAY_PORT:-6379}
 NNODES="${#NODES[@]}"
+NGPUS_PER_NODE=${NGPUS_PER_NODE:-8}
 
 # ── Shared settings ────────────────────────────────────────────────────────
-# These are forwarded to every node via SSH.
 # Required — must be set before running this script.
 : "${REF_MODEL_PATH:?'REF_MODEL_PATH is required'}"
 : "${JUDGE_MODEL:?'JUDGE_MODEL is required'}"
@@ -31,23 +34,31 @@ DATA_ROOT=${DATA_ROOT:-""}
 SAVE_CHECKPOINT_DIR=${SAVE_CHECKPOINT_DIR:-""}
 WANDB_API_KEY=${WANDB_API_KEY:-""}
 
-# Path to the training script on each node (must be the same on all nodes).
+# Path to the training script on the head node.
 TRAIN_SCRIPT=${TRAIN_SCRIPT:-"$(cd "$(dirname "$0")" && pwd)/run_rubrics_rl_multidata.sh"}
 
-# ── Launch ─────────────────────────────────────────────────────────────────
-echo "Launching on ${NNODES} nodes: ${NODES[*]}"
-echo "Master: ${MASTER_ADDR}:${MASTER_PORT}"
+# ── Step 1: Start Ray head ─────────────────────────────────────────────────
+echo "Starting Ray head on ${HEAD}:${RAY_PORT} ..."
+ssh -o StrictHostKeyChecking=no "${HEAD}" \
+    "ray stop --force 2>/dev/null || true; ray start --head --port=${RAY_PORT} --num-gpus=${NGPUS_PER_NODE}"
 
-PIDS=()
+# ── Step 2: Start Ray workers ──────────────────────────────────────────────
 for i in "${!NODES[@]}"; do
+    [ "$i" -eq 0 ] && continue
     NODE="${NODES[$i]}"
-    echo "  → node ${i}: ${NODE}"
+    echo "Starting Ray worker on node ${i}: ${NODE} ..."
+    ssh -o StrictHostKeyChecking=no "${NODE}" \
+        "ray stop --force 2>/dev/null || true; ray start --address='${HEAD}:${RAY_PORT}' --num-gpus=${NGPUS_PER_NODE}"
+done
 
-    ssh -o StrictHostKeyChecking=no "${NODE}" bash -s -- "${i}" << EOF &
-export NODE_RANK=${i}
+echo "Ray cluster started. Waiting 5s for workers to register ..."
+sleep 5
+
+# ── Step 3: Run training on head node ─────────────────────────────────────
+echo "Launching training on head node ${HEAD} ..."
+ssh -o StrictHostKeyChecking=no "${HEAD}" bash -s << EOF
 export NNODES=${NNODES}
-export MASTER_ADDR=${MASTER_ADDR}
-export MASTER_PORT=${MASTER_PORT}
+export RAY_ADDRESS=auto
 export REF_MODEL_PATH="${REF_MODEL_PATH}"
 export JUDGE_MODEL="${JUDGE_MODEL}"
 export LLM_AS_A_JUDGE_BASE="${LLM_AS_A_JUDGE_BASE}"
@@ -57,21 +68,5 @@ $([ -n "${SAVE_CHECKPOINT_DIR}" ] && echo "export SAVE_CHECKPOINT_DIR='${SAVE_CH
 $([ -n "${WANDB_API_KEY}" ] && echo "export WANDB_API_KEY='${WANDB_API_KEY}'" || true)
 bash "${TRAIN_SCRIPT}"
 EOF
-    PIDS+=($!)
-done
 
-# Wait for all nodes; exit with error if any node fails.
-FAILED=0
-for i in "${!PIDS[@]}"; do
-    if ! wait "${PIDS[$i]}"; then
-        echo "ERROR: node ${i} (${NODES[$i]}) failed." >&2
-        FAILED=1
-    fi
-done
-
-if [ "${FAILED}" -eq 0 ]; then
-    echo "All nodes finished successfully."
-else
-    echo "One or more nodes failed." >&2
-    exit 1
-fi
+echo "Training finished."
