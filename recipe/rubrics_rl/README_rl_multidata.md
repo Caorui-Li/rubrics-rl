@@ -71,12 +71,14 @@ bash ./recipe/rubrics_rl/prepare_data_multidata.sh
 
 ## 3. 训练
 
+> **前提**：`dataset/rubrics_mixed/mixed_train.parquet` 和 `mixed_val.parquet` 已生成（即第 2 节已完成）。
+
 ### 单节点
 
 ```bash
 cd verl-exp
 export REF_MODEL_PATH=/mnt/storage/models/Qwen2.5-VL-7B-Instruct
-export JUDGE_MODEL="gpt-4o"
+export JUDGE_MODEL="gpt-4o"               # 见第 4 节选择其他 judge
 export LLM_AS_A_JUDGE_BASE="https://api.openai.com/v1"
 export JUDGE_MODEL_API_KEY="sk-..."
 bash ./recipe/rubrics_rl/run_rubrics_rl_multidata.sh
@@ -110,7 +112,7 @@ bash ./recipe/rubrics_rl/launch_multinode.sh
 
 ---
 
-## 3. 配置 Judge 模型
+## 4. 配置 Judge 模型
 
 支持任意 OpenAI 兼容 API，按需选择一种：
 
@@ -136,6 +138,19 @@ export JUDGE_MODEL_API_KEY="<deepseek key>"
 ```
 
 **本地 vllm server（备选）**
+
+先在 judge 机器上启动服务：
+
+```bash
+vllm serve <JUDGE_MODEL_PATH> \
+    --host 0.0.0.0 --port 8000 \
+    --dtype bfloat16 \
+    --tensor-parallel-size 1 \
+    --gpu_memory_utilization 0.7
+```
+
+再设置以下变量（`JUDGE_MODEL` 与 `--served-model-name` 一致，默认为模型目录名）：
+
 ```bash
 export JUDGE_MODEL="<model-name>"
 export LLM_AS_A_JUDGE_BASE="http://<host>:8000/v1"
@@ -144,7 +159,7 @@ export JUDGE_MODEL_API_KEY="EMPTY"
 
 ---
 
-## 4. 环境变量汇总
+## 5. 环境变量汇总
 
 启动前设置以下变量（`必填` 未设置会报错退出，`选填` 有默认值）：
 
@@ -178,7 +193,7 @@ export WANDB_API_KEY=your_key                         # 可选
 
 ---
 
-## 5. 训练默认参数
+## 6. 训练默认参数
 
 | 参数 | 默认值 |
 |------|--------|
@@ -193,4 +208,4 @@ export WANDB_API_KEY=your_key                         # 可选
 
 ## 注意事项
 
-- 若只需重新训练（图片和 parquet 已生成），可注释掉脚本中的 Step 1~4，直接从 Step 5 开始。
+- 若只需重新训练（图片和 parquet 已生成），跳过第 1、2 节，直接从第 3 节开始。
