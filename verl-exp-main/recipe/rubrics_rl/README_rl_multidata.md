@@ -97,7 +97,7 @@ NODES=(
 )
 ```
 
-然后在任意一台机器上运行一次：
+然后在任意一台机器上运行，脚本会**打印**每个节点需要执行的命令块：
 
 ```bash
 export REF_MODEL_PATH=/mnt/storage/models/Qwen2.5-VL-7B-Instruct
@@ -108,9 +108,12 @@ export DATA_ROOT=/mnt/storage/data
 bash ./recipe/rubrics_rl/launch_multinode.sh
 ```
 
-脚本会自动：① 在 `NODES[0]` 启动 Ray head；② 在其余节点启动 Ray worker；③ 在 head 节点运行训练命令（Ray 负责分发到所有节点）。
+脚本输出每个节点对应的命令块，按以下顺序手动执行：
+1. 在 `NODES[0]`（head）上粘贴 head 块，等待 `ray start --head` 返回
+2. 在其余节点上各自粘贴 worker 块，加入 Ray 集群
+3. 回到 head 节点，运行输出末尾的 `bash run_rubrics_rl_multidata.sh`，Ray 自动分发到所有节点
 
-> **前提**：launcher 所在机器可免密 SSH 到所有训练节点；`dataset/rubrics_mixed/` 在各节点上路径一致（共享存储或提前同步）；各节点已安装 Ray。
+> **前提**：`dataset/rubrics_mixed/` 在各节点上路径一致（共享存储或提前同步）；各节点已安装 Ray。
 
 ---
 
@@ -173,6 +176,7 @@ export JUDGE_MODEL_API_KEY="EMPTY"
 | `JUDGE_MODEL_API_KEY` | 必填 | Judge API key，见第 3 节 | 无 |
 | `DATA_ROOT` | 选填 | 数据集根目录，磁盘有限时指向大容量挂载盘 | `<repo>/data` |
 | `NNODES` | 选填 | 训练节点总数（Ray 资源分配用） | `1` |
+| `N_GPUS_PER_NODE` | 选填 | 每节点 GPU 数 | `8` |
 | `RAY_ADDRESS` | 选填 | Ray 集群地址，多节点时设为 `auto` | `""` （本地单节点） |
 | `WANDB_API_KEY` | 选填 | WandB 日志 key | `""` （不上传） |
 | `SAVE_CHECKPOINT_DIR` | 选填 | checkpoint 保存路径 | `./verl_checkpoints` |
