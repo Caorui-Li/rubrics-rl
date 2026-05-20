@@ -80,7 +80,7 @@ python -m verl.trainer.main_ppo \
     data.truncation='error' \
     data.image_key=images \
     actor_rollout_ref.model.path="${REF_MODEL_PATH}" \
-    +actor_rollout_ref.model.override_config.attn_implementation=sdpa \
+    'actor_rollout_ref.model.override_config={attn_implementation:sdpa}' \
     actor_rollout_ref.actor.optim.lr=1e-6 \
     actor_rollout_ref.model.use_remove_padding=True \
     actor_rollout_ref.model.use_fused_kernels=True \
