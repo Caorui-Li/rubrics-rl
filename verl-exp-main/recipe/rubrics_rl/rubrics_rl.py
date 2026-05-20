@@ -396,10 +396,49 @@ def compute_score(data_source: str, solution_str: str, ground_truth: str, extra_
 
 
 class RubricsRLHFDataset(RLHFDataset):
-    
+
     def _build_messages(self, example: dict):
-        # Parent handles PIL image embedding (old verl API: no pop on prompt, pops images separately)
-        messages = super()._build_messages(example)
+        from io import BytesIO
+
+        from PIL import Image
+
+        messages: list = example[self.prompt_key]
+        images = example.pop(self.image_key, [])
+        videos = example.pop(self.video_key, [])
+
+        image_offset, video_offset = 0, 0
+        for message in messages:
+            if not images and not videos:
+                continue
+            assert self.processor is not None, "processor is needed to process image and video"
+
+            content = message["content"]
+            if not isinstance(content, str):
+                continue
+
+            content_list = []
+            segments = re.split("(<image>|<video>)", content)
+            segments = [item for item in segments if item != ""]
+            for segment in segments:
+                if segment == "<image>":
+                    assert image_offset < len(images), f"image_offset {image_offset} >= len(images) {len(images)}"
+                    image = images[image_offset]
+                    if isinstance(image, Image.Image):
+                        image = image.convert("RGB")
+                    elif isinstance(image, dict) and "bytes" in image:
+                        image["image"] = Image.open(BytesIO(image["bytes"]))
+                    content_list.append({"type": "image", "image": image})
+                    image_offset += 1
+                elif segment == "<video>":
+                    assert video_offset < len(videos), f"video_offset {video_offset} >= len(videos) {len(videos)}"
+                    content_list.append({"type": "video", "video": videos[video_offset]})
+                    video_offset += 1
+                else:
+                    content_list.append({"type": "text", "text": segment})
+            message["content"] = content_list
+
+        assert image_offset == len(images), f"image_offset {image_offset} != len(images) {len(images)}"
+        assert video_offset == len(videos), f"video_offset {video_offset} != len(videos) {len(videos)}"
 
         if not any(msg.get("role") == "system" for msg in messages):
             messages.insert(0, {"role": "system", "content": DEFAULT_SYSTEM_PROMPT})

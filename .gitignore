@@ -1,6 +1,8 @@
 
 # datasets and downloaded data
-data/
+/data/
+/verl-exp-main/data/
+/verl-exp-main/dataset/
 datasets/
 
 **/*.pt
