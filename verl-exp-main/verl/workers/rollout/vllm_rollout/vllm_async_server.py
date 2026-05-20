@@ -71,7 +71,12 @@ if _VLLM_VERSION > version.parse("0.11.0"):
     if _VLLM_VERSION == version.parse("0.12.0"):
         from vllm.entrypoints.harmony_utils import get_encoding
 
-        get_encoding()
+        try:
+            get_encoding()
+        except Exception as e:
+            logging.getLogger(__file__).warning(
+                "Failed to preload harmony encoding (only needed for GPT-OSS models): %s", e
+            )
 else:
     from vllm.utils import FlexibleArgumentParser, get_tcp_uri
 if _VLLM_VERSION >= version.parse("0.12.0"):
